@@ -2,11 +2,14 @@
 """评测：在 held-out 测试集上算准确率（自包含，不依赖其他项目）。
 
 用法:
-    python eval_grpo.py --task gsm8k --model outputs/full            # 全量 1319 题
-    python eval_grpo.py --task gsm8k --model outputs/full --limit 100
-    python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct  # 测基座
+    python eval_grpo.py --task gsm8k --model outputs/full --limit 50   # 先小样本冒烟
+    python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
+    python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct   # 测基座
 
 用 vLLM 离线推理（快）；没装 vLLM 自动回退 transformers。
+
+★ --model 传 LoRA 训练的输出目录也能用：脚本会读 adapter_config.json，
+  自动加载基座 + adapter 并 merge_and_unload()（合并后推理更快）。
 
 注意：GSM8K 用 test split（1319 题），训练用 train split —— 天然无污染。
 """
@@ -60,10 +63,22 @@ def load_gsm8k_test(cache_dir: Path, limit=None):
     return rows
 
 
+def resolve_model(model_path: str):
+    """★ LoRA 训练存下来的只是 adapter（adapter_config.json + safetensors），
+    不是完整模型。这里识别出来并返回 (基座名, adapter路径) 供后续组装。
+    """
+    p = Path(model_path)
+    cfg = p / "adapter_config.json"
+    if p.is_dir() and cfg.exists():
+        d = json.loads(cfg.read_text(encoding="utf-8"))
+        return d.get("base_model_name_or_path", ""), str(p)
+    return model_path, None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="gsm8k", choices=["gsm8k"])
-    ap.add_argument("--model", required=True, help="模型路径或 HF 名")
+    ap.add_argument("--model", required=True, help="模型路径或 HF 名（支持 LoRA adapter 目录）")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.0, help="评测用贪心")
@@ -73,6 +88,12 @@ def main():
     ap.add_argument("--out", default=None, help="结果 json 路径")
     args = ap.parse_args()
 
+    base_name, adapter = resolve_model(args.model)
+    if adapter:
+        print(f"检测到 LoRA adapter → 基座 {base_name} + {adapter}（评测时合并权重）")
+        if not base_name:
+            raise SystemExit("adapter_config.json 里没有 base_model_name_or_path")
+
     rows = load_gsm8k_test(Path(args.cache_dir), args.limit)
     print(f"评测：GSM8K test，{len(rows)} 题，模型 {args.model}")
 
@@ -80,7 +101,10 @@ def main():
 
     # ---------- 生成 ----------
     outputs = []
-    use_vllm = not args.no_vllm
+    # adapter 场景只用 transformers 路径（vLLM 加载 LoRA 需要额外配置，不冒险）
+    use_vllm = (not args.no_vllm) and adapter is None
+    if adapter and not args.no_vllm:
+        print("（LoRA adapter 走 transformers 路径）")
     if use_vllm:
         try:
             from vllm import LLM, SamplingParams
@@ -99,10 +123,17 @@ def main():
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         print("用 transformers 推理（较慢）...")
-        tok = AutoTokenizer.from_pretrained(args.model)
+        load_name = base_name or args.model
+        tok = AutoTokenizer.from_pretrained(load_name)
         model = AutoModelForCausalLM.from_pretrained(
-            args.model, torch_dtype=torch.bfloat16, device_map="auto")
+            load_name, torch_dtype=torch.bfloat16, device_map="auto")
+        if adapter:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, adapter)
+            model = model.merge_and_unload()     # 合并进基座，推理更快
+            print("  ✓ adapter 已合并进基座权重")
         model.eval()
+        pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
         for i, p in enumerate(prompts):
             text = tok.apply_chat_template([{"role": "user", "content": p}],
                                            tokenize=False,
@@ -110,8 +141,7 @@ def main():
             inputs = tok(text, return_tensors="pt").to(model.device)
             with torch.no_grad():
                 gen = model.generate(**inputs, max_new_tokens=args.max_new_tokens,
-                                     do_sample=False,
-                                     pad_token_id=tok.eos_token_id)
+                                     do_sample=False, pad_token_id=pad_id)
             outputs.append(tok.decode(gen[0][inputs["input_ids"].shape[1]:],
                                       skip_special_tokens=True))
             if (i + 1) % 20 == 0:
