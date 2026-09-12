@@ -70,9 +70,15 @@ def lora_param_count(g, r):
 
 def estimate(g, batch, prompt_len, comp_len, lora_r=None, grad_ckpt=True,
              use_vllm=False, vllm_mem=0.3, gpu_gib=24.0, wbytes=2,
-             safety=SAFETY):
-    """返回 (明细, 预算峰值, {fixed, var})。峰值对 B 线性，可反推安全 batch。"""
+             safety=SAFETY, gen_batch=None):
+    """返回 (明细, 预算峰值, {fixed, var})。峰值对 B 线性，可反推安全 batch。
+
+    gen_batch: rollout 一次生成多少条。TRL 的 steps_per_generation 默认等于
+    grad_accum，所以生成批次 = 微批 × grad_accum（KV cache 按它算），
+    但前向/反向仍按微批 batch 算。
+    """
     B, Pl, L = batch, prompt_len, comp_len
+    G = gen_batch or B
     tok = B * (Pl + L)
     layer_bytes = tok * (6 * g["H"] + 2 * g["I"]) * 2          # 一层全部中间量(bf16)
 
@@ -81,7 +87,7 @@ def estimate(g, batch, prompt_len, comp_len, lora_r=None, grad_ckpt=True,
     if lora_r:
         lp = lora_param_count(g, lora_r)
         optim = lp * 2 + lp * 4 * 2                            # grad + AdamW m,v
-    kv = B * (Pl + L) * g["N"] * 2 * g["nkv"] * g["d"] * 2     # rollout KV cache
+    kv = G * (Pl + L) * g["N"] * 2 * g["nkv"] * g["d"] * 2     # rollout KV cache
     logits_div = B * L * g["V"] * 2                            # 除以温度后的 bf16
     logp_saved = B * L * g["V"] * 4                            # autocast → fp32
 
@@ -111,7 +117,8 @@ def estimate(g, batch, prompt_len, comp_len, lora_r=None, grad_ckpt=True,
 
 def report(batch, model="Qwen/Qwen2.5-1.5B-Instruct", prompt_len=384,
            comp_len=512, num_gen=8, lora_r=32, grad_ckpt=True,
-           use_vllm=False, vllm_mem=0.3, gpu_gib=None, wbytes=2, steps=150):
+           use_vllm=False, vllm_mem=0.3, gpu_gib=None, wbytes=2, steps=150,
+           grad_accum=1):
     from transformers import AutoConfig
     g = model_geometry(AutoConfig.from_pretrained(model))
 
@@ -125,14 +132,16 @@ def report(batch, model="Qwen/Qwen2.5-1.5B-Instruct", prompt_len=384,
 
     items, peak, parts = estimate(g, batch, prompt_len, comp_len, lora_r,
                                   grad_ckpt, use_vllm, vllm_mem, gpu_gib=gpu_gib,
-                                  wbytes=wbytes)
+                                  wbytes=wbytes, gen_batch=batch * grad_accum)
     raw = sum(items.values())
 
     print("=" * 66)
     print(f"显存预算  {model.split('/')[-1]}  |  {g['params']/1e9:.2f}B 参数"
           f"  |  vocab={g['V']}  |  {g['N']} 层  |  tied={g['tied']}")
-    print(f"  batch={batch}(completions)  G={num_gen}  →  {batch // num_gen} 个 prompt/步"
-          f"  |  prompt≤{prompt_len}  completion≤{comp_len}")
+    prompts_per_step = max(1, batch * grad_accum // num_gen)
+    print(f"  batch={batch}(completions/微批)  G={num_gen}  grad_accum={grad_accum}"
+          f"  →  有效 {batch * grad_accum} completions/步 = {prompts_per_step} 个 prompt/步")
+    print(f"  prompt≤{prompt_len}  completion≤{comp_len}")
     print(f"  权重={'bf16' if wbytes == 2 else 'fp32'}  |  LoRA r={lora_r}"
           f"  |  梯度检查点={'开' if grad_ckpt else '关'}  |  GPU {gpu_gib:.1f} GiB")
     print("-" * 66)
@@ -141,9 +150,9 @@ def report(batch, model="Qwen/Qwen2.5-1.5B-Instruct", prompt_len=384,
         print(f"  {k:<26}{v/GiB:>7.2f} GiB  {v/cap*100:>5.1f}%  {bar}")
     print("-" * 66)
     print(f"  {'理论合计':<26}{raw/GiB:>7.2f} GiB")
-    print(f"  {'预算峰值(理论×%.1f)' % parts['safety']:<24}{peak/GiB:>7.2f} GiB"
-          f"  {peak/cap*100:>5.1f}%   ← 与 %.1f GiB 安全线比较"
-          % (cap * FIT_RATIO / GiB))
+    label = f"预算峰值(理论×{parts['safety']:.1f})"
+    print(f"  {label:<24}{peak/GiB:>7.2f} GiB  {peak/cap*100:>5.1f}%"
+          f"   ← 与 {cap * FIT_RATIO / GiB:.1f} GiB 安全线比较")
 
     ok = peak <= cap * FIT_RATIO
     print(f"\n  {'✅ 放得下' if ok else '❌ 大概率 OOM'}"
@@ -163,8 +172,9 @@ def report(batch, model="Qwen/Qwen2.5-1.5B-Instruct", prompt_len=384,
         _, pk3, _ = estimate(g, batch, prompt_len, comp_len, lora_r, grad_ckpt,
                              use_vllm, vllm_mem, gpu_gib=gpu_gib, wbytes=2)
         print(f"  → 若按 bf16 加载模型，预算峰值可降到 {pk3/GiB:.2f} GiB")
-    if batch // num_gen < 2:
-        print(f"  ⚠️  每步只有 {batch // num_gen} 个 prompt，可加 --grad-accum 提升有效 batch")
+    if prompts_per_step < 2:
+        print(f"  ⚠️  每步只有 {prompts_per_step} 个 prompt，梯度噪声偏大，"
+              f"建议加 --grad-accum 或减小 G")
     print("=" * 66)
 
 
@@ -183,11 +193,12 @@ def main():
     ap.add_argument("--use-vllm", action="store_true")
     ap.add_argument("--gpu-gib", type=float, default=None)
     ap.add_argument("--steps", type=int, default=150)
+    ap.add_argument("--grad-accum", type=int, default=1)
     a = ap.parse_args()
     report(a.batch_size, a.model, a.max_prompt_length, a.max_completion_length,
            a.num_generations, None if a.no_lora else a.lora_r,
            not a.no_grad_ckpt, a.use_vllm, gpu_gib=a.gpu_gib,
-           wbytes=4 if a.no_bf16 else 2, steps=a.steps)
+           wbytes=4 if a.no_bf16 else 2, steps=a.steps, grad_accum=a.grad_accum)
 
 
 if __name__ == "__main__":

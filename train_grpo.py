@@ -96,7 +96,8 @@ def main():
                    args.max_completion_length, args.num_generations,
                    args.lora_r if args.use_lora else None,
                    not args.no_grad_ckpt, not args.no_vllm, args.vllm_mem,
-                   wbytes=2 if _dt != "fp32" else 4, steps=args.steps)
+                   wbytes=2 if _dt != "fp32" else 4, steps=args.steps,
+                   grad_accum=args.grad_accum)
     except Exception as e:  # 估算是辅助功能，不能因为估算失败挡住训练
         print(f"（显存预算估算跳过: {type(e).__name__}: {e}）")
 
