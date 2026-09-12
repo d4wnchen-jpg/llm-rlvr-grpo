@@ -103,7 +103,20 @@ def main():
         cfg["vllm_mode"] = "colocate"
         cfg["vllm_gpu_memory_utilization"] = args.vllm_mem
         # ★ 单卡关键：优化时把 vLLM 权重/KV cache 卸载到 CPU 内存
+        #   （仅较新 TRL 支持，下面的兼容过滤会自动处理）
         cfg["vllm_enable_sleep_mode"] = not args.no_vllm_sleep
+
+    # ---------- 版本兼容：过滤掉当前 TRL 不支持的参数 ----------
+    # 不同 TRL 版本字段有差异（如 vllm_enable_sleep_mode 是后加的），
+    # 直接传会报 TypeError；这里自动过滤并提示。
+    import dataclasses
+    supported = {f.name for f in dataclasses.fields(GRPOConfig)}
+    dropped = sorted(k for k in cfg if k not in supported)
+    if dropped:
+        print(f"⚠️  当前 TRL 不支持这些参数，已自动忽略: {dropped}")
+        print("    （缺 vllm_enable_sleep_mode 说明 TRL < 0.20，"
+              "单卡显存可能更紧张，必要时降 batch/G）")
+        cfg = {k: v for k, v in cfg.items() if k in supported}
 
     training_args = GRPOConfig(**cfg)
 
