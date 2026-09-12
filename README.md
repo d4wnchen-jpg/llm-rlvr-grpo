@@ -117,6 +117,7 @@ GRPOConfig(vllm_enable_sleep_mode=True)
 | 训练用 train split，评测用 **test split（1319）** | 天然无污染 |
 | 被比较的模型用**同一套解码参数**（贪心 `temperature=0`、`max_new_tokens=512`）| 采样 vs 贪心能差好几个点 |
 | 用 `--limit N` 时**两边必须同一个 N** | `--limit N` = `rows[:N]`，子集不同则不可比 |
+| transformers 路径用 `--eval-batch-size`（默认 8）批量左 padding 推理 | 逐条要 30–60 分钟，批量 8 约 10–15 分钟；**两边必须同一个值** |
 
 `eval_grpo.py` 每次评测会写一个**子集指纹**；`compare_results.py` 校验指纹一致后才出对照表，不一致直接报错退出。
 
