@@ -108,6 +108,38 @@ GRPOConfig(vllm_enable_sleep_mode=True)
    默认等于 `grad_accum`，会一次生成 16 条再拆成 2 个微批做前向/反向 ——
    **有效 batch 不变，峰值按 8 条算（11.6 GiB）**。
 
+## 评测协议（★ 数字可比性的前提）
+
+对照实验最容易翻车的不是训练，是**拿不可比的数字做比较**。本项目强制三条：
+
+| 规则 | 原因 |
+|---|---|
+| 训练用 train split，评测用 **test split（1319）** | 天然无污染 |
+| 被比较的模型用**同一套解码参数**（贪心 `temperature=0`、`max_new_tokens=512`）| 采样 vs 贪心能差好几个点 |
+| 用 `--limit N` 时**两边必须同一个 N** | `--limit N` = `rows[:N]`，子集不同则不可比 |
+
+`eval_grpo.py` 每次评测会写一个**子集指纹**；`compare_results.py` 校验指纹一致后才出对照表，不一致直接报错退出。
+
+**推荐流程：小样本看方向 → 全量定结论**
+
+```bash
+# 第 1 轮：300 题，约 25 分钟拿到方向性结论（两边必须同一个 --limit）
+python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --limit 300 --out results/base300.json
+python eval_grpo.py --task gsm8k --model outputs/full --limit 300 --out results/grpo300.json
+python compare_results.py results/base300.json results/grpo300.json
+
+# 第 2 轮：全量 1319 题，定结论（约 30-60 分钟/次）
+python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --out results/base.json
+python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
+python compare_results.py results/base.json results/grpo.json
+```
+
+> ⚠️ `check_baseline.py` 报的 81.9% **不能**当基线用：那是 **train split + 温度 0.8 采样**，
+> 目的是「看有没有学习信号」，不是评测结果。
+>
+> 两个模型跑的是**同一批题 → 配对数据**，所以 `compare_results.py` 用 **McNemar 精确检验**
+> 而非独立两比例检验。300 题上 1–2 个点的差异通常**不显著**，别急着写「提升了」。
+
 ## 防污染设计（可验证）
 
 ```
@@ -158,8 +190,10 @@ python train_grpo.py --task gsm8k --use-lora --no-vllm \
     --steps 150 --num-generations 8 --batch-size 8 --grad-accum 2 \
     --max-completion-length 512 --save-steps 50 --out outputs/full
 
-# 7. 评测（held-out）
-python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
+# 7. 评测（held-out）：先用 --limit 300 看方向，再全量定结论
+python eval_grpo.py --task gsm8k --model outputs/full --limit 300 --out results/grpo300.json
+python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --limit 300 --out results/base300.json
+python compare_results.py results/base300.json results/grpo300.json
 ```
 
 ## 文件说明
@@ -171,7 +205,8 @@ python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
 | `check_baseline.py` | **训练前必做**：测通过率 + ★组内学习信号 |
 | `mem_budget.py` | **开跑前必做**：秒级估算显存峰值、判定能否放下、给安全 batch 建议 |
 | `train_grpo.py` | GRPO 训练（TRL，可选 vLLM colocate + sleep mode）｜启动即打印版本/精度/显存预算 |
-| `eval_grpo.py` | 评测 held-out（vLLM 推理，自动回退 transformers）|
+| `eval_grpo.py` | 评测 held-out（支持 LoRA adapter 目录；vLLM 推理，自动回退 transformers）|
+| `compare_results.py` | 对照表 + **子集指纹校验** + **McNemar 配对显著性检验** |
 
 ## 环境与预算
 

@@ -14,6 +14,7 @@
 注意：GSM8K 用 test split（1319 题），训练用 train split —— 天然无污染。
 """
 import argparse
+import hashlib
 import json
 import sys
 import urllib.request
@@ -63,6 +64,18 @@ def load_gsm8k_test(cache_dir: Path, limit=None):
     return rows
 
 
+def subset_fingerprint(rows) -> str:
+    """评测子集指纹。
+
+    `--limit N` 是确定性的 rows[:N]，所以只要两边的指纹相同，
+    比的就是同一批题、结果可以直接相减。指纹不同就别比（会被面试官一句话问倒）。
+    """
+    h = hashlib.md5()
+    for r in rows:
+        h.update(r["question"].encode("utf-8"))
+    return h.hexdigest()[:12]
+
+
 def resolve_model(model_path: str):
     """★ LoRA 训练存下来的只是 adapter（adapter_config.json + safetensors），
     不是完整模型。这里识别出来并返回 (基座名, adapter路径) 供后续组装。
@@ -95,6 +108,10 @@ def main():
             raise SystemExit("adapter_config.json 里没有 base_model_name_or_path")
 
     rows = load_gsm8k_test(Path(args.cache_dir), args.limit)
+    fp = subset_fingerprint(rows)
+    if args.limit:
+        print(f"★ 评测子集：前 {args.limit} 题（确定性切片，指纹 {fp}）")
+        print("  只有指纹相同的结果才能直接比较 —— 用 compare_results.py 会自动校验")
     print(f"评测：GSM8K test，{len(rows)} 题，模型 {args.model}")
 
     prompts = [f"{r['question'].strip()}\n\n{GSM8K_INSTRUCTION}" for r in rows]
@@ -176,6 +193,8 @@ def main():
             "model": args.model,
             "task": args.task,
             "split": "test",
+            "limit": args.limit,
+            "subset_fingerprint": fp,
             "num_problems": len(rows),
             "correct": correct,
             "accuracy": acc,
