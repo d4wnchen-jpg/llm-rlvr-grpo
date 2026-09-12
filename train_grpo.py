@@ -72,6 +72,8 @@ def main():
                     help="TRL 不填时会给 HF 传 top_k=-1；实测 -1 会被 "
                          "TopKLogitsWarper 拒绝（HF 不建 warper，无害），"
                          "仅在需要显式设 top_k 时使用")
+    ap.add_argument("--no-rollout-eval", action="store_true",
+                    help="关闭「rollout 强制 eval 模式」的补丁（默认开，见下方注释）")
     ap.add_argument("--timeout", type=float, default=6.0)
     ap.add_argument("--log-completions", action="store_true",
                     help="★ 诊断用：把每一步 rollout 的原文/奖励/advantage 全部打出来"
@@ -203,7 +205,32 @@ def main():
         peft_config=peft_config,
     )
 
-    # ★ LoRA + 梯度检查点：让 input embedding 输出 requires_grad，
+    # ★★ rollout 必须走 eval 模式。两个理由：
+    #   ① 梯度检查点被 `if self.gradient_checkpointing and self.training` 门控，
+    #      train 模式下生成时它照样生效；而 HF 的 generate 按
+    #      generation_config.use_cache（默认 True）建 KV cache，**不看**
+    #      model.config.use_cache —— TRL 设的 config.use_cache=False 因此无效
+    #      （见 _prepare_cache_for_generation 源码）。结果就是「不该用 cache 的
+    #      模型被强行用 cache」，KV cache 在 checkpoint 包装层里被写坏，生成退化
+    #      成无视 prompt 的乱码续写，永不吐 EOS。
+    #   ② LoRA dropout 在 rollout 时也不该生效，否则采样分布 ≠ 算 logprob 的分布。
+    if not args.no_rollout_eval:
+        try:
+            _orig_gen = trainer._generate_and_score_completions
+
+            def _gen_eval(inputs, _orig=_orig_gen, _tr=trainer):
+                _tr.model.eval()
+                try:
+                    return _orig(inputs)
+                finally:
+                    _tr.model.train()
+
+            trainer._generate_and_score_completions = _gen_eval
+            print("rollout: 已强制 eval 模式（关掉梯度检查点/dropout 对生成的干扰）")
+        except Exception as e:
+            print(f"⚠️  rollout eval 补丁未生效: {type(e).__name__}: {e}")
+
+    # LoRA + 梯度检查点：让 input embedding 输出 requires_grad，
     #   否则 checkpoint 段的反传拿不到梯度（报 does not require grad）
     if args.use_lora and not args.no_grad_ckpt:
         trainer.model.enable_input_require_grads()
