@@ -151,14 +151,32 @@ MBPP : 训练 full − sanitized (547)  |  评测 EvalPlus (MBPP+)
 
 ## 结果
 
-| 模型 | GSM8K test | 说明 |
-|---|---|---|
-| Qwen2.5-1.5B-Instruct（基座） | _待填_ | |
-| + SFT（同规模对照） | _待填_ | |
-| **+ GRPO（本项目）** | _待填_ | |
+评测协议：GSM8K **test（1319 题，held-out）**，贪心解码，`max_new_tokens=512`，同一批题。
 
-> 待训练完成后填入。**成功标准（阶梯式）**：
-> ① 跑通循环 reward 有变化 → ② 训练集 reward 明显上升 → ③ **held-out 上升** → ④ 同规模 RL > SFT
+| 模型 | GSM8K test | Δ | 说明 |
+|---|---|---|---|
+| Qwen2.5-1.5B-Instruct（基座） | **71.9%** (949/1319) | — | 空预测 0/1319，无截断 |
+| **+ GRPO（本项目，150 步 / 弱配置）** | **71.5%** (943/1319) | **−0.5** | McNemar **p=0.61，不显著** |
+| + GRPO（run2：1500 步 / 修好的优化配置） | _进行中_ | | `--lr 5e-6 constant_with_warmup --beta 0.005` |
+| + SFT（同规模对照） | _待补_ | | |
+
+**第一个实验是一个干净的 null，而不是"失败"**——我们定位到 4 条机制性原因（详见 `docs/EXPERIMENT_LOG.md`）：
+
+1. **优化太弱**：`lr=1e-6` 是**全参微调**的量级，我们用的却是 LoRA；且 linear 调度把它衰减归零。
+   证据：训练后 `lora_B |max| = 3.96e-05`，**基本停在零初始化**（典型训练后应到 1e-3）
+2. **KL 锚太死**：`beta=0.04`，参考实现用 0.001（差 40×）
+3. **信号密度低**：`frac_reward_zero_std ≈ 0.5`——**一半的组零方差、零梯度**。
+   而按 0.72 的独立正确率算，8 条全对只有 7%，实测却有 50% → **per-prompt 正确率是双峰的**（易题恒对、难题恒错）
+4. **有效数据量极小**：数据池 7473，但 150 步 × 2 prompt = 实际只采样 **300 个 prompt（epoch=0.04）**，再打五折 → **~150 个题真的产生了梯度**
+
+> **已有同模型同数据的公开结果**：[RLVR-vs-SFT-Qwen2.5-1.5b](https://github.com/jayminbhan/RLVR-vs-SFT-Qwen2.5-1.5b)
+> 用 verl + vLLM + 6×4090（**193 GPU·h**）报告 GRPO **+11.9**（69.7→81.6）、SFT **−15.2**。
+> 我们的差异化不在"RLVR 有没有用"，而在 **① 单卡 ~10 GPU·h 的算力前沿 ② 为什么朴素配置一步都不动 ③ 数据难度筛选**。
+
+**成功标准（阶梯式）**：
+① 跑通循环 reward 有变化 → ② 训练集 reward 明显上升 → ③ **held-out 上升（≥ +2.0 点且 p<0.05）** → ④ 同规模 RL > SFT
+
+> 进度与完整诊断记录：**[docs/EXPERIMENT_LOG.md](docs/EXPERIMENT_LOG.md)**
 
 ## 快速开始
 
@@ -208,6 +226,7 @@ python compare_results.py results/base300.json results/grpo300.json
 | `train_grpo.py` | GRPO 训练（TRL，可选 vLLM colocate + sleep mode）｜启动即打印版本/精度/显存预算 |
 | `eval_grpo.py` | 评测 held-out（支持 LoRA adapter 目录；vLLM 推理，自动回退 transformers）|
 | `compare_results.py` | 对照表 + **子集指纹校验** + **McNemar 配对显著性检验** |
+| `docs/EXPERIMENT_LOG.md` | **实验日志/交接文档**：环境事实、已完成的数字、机制诊断、run2 配置与监控命令、决策树 |
 
 ## 环境与预算
 
