@@ -70,6 +70,9 @@ def main():
     ap.add_argument("--no-vllm-sleep", action="store_true")
     ap.add_argument("--vllm-mem", type=float, default=0.3)
     ap.add_argument("--no-bf16", action="store_true")
+    ap.add_argument("--dtype", default=None, choices=["bf16", "fp32", "auto"],
+                    help="模型加载精度。默认 bf16；不传 dtype 会被 transformers "
+                         "按 fp32 加载（1.5B 白吃 3 GiB，且慢一倍）")
     ap.add_argument("--no-grad-ckpt", action="store_true",
                     help="关闭梯度检查点（默认开启：用重算换显存，峰值降 30-40%%）")
     args = ap.parse_args()
@@ -83,10 +86,12 @@ def main():
     # 只读 HF config，不加载权重，几秒钟。会顺便给出安全 batch 建议。
     try:
         from mem_budget import report as mem_report
+        _dt = args.dtype or ("fp32" if args.no_bf16 else "bf16")
         mem_report(args.batch_size, args.model, args.max_prompt_length,
                    args.max_completion_length, args.num_generations,
                    args.lora_r if args.use_lora else None,
-                   not args.no_grad_ckpt, not args.no_vllm, args.vllm_mem)
+                   not args.no_grad_ckpt, not args.no_vllm, args.vllm_mem,
+                   wbytes=2 if _dt != "fp32" else 4, steps=args.steps)
     except Exception as e:  # 估算是辅助功能，不能因为估算失败挡住训练
         print(f"（显存预算估算跳过: {type(e).__name__}: {e}）")
 
@@ -122,6 +127,17 @@ def main():
         gradient_checkpointing=not args.no_grad_ckpt,
         gradient_checkpointing_kwargs={"use_reentrant": False},
     )
+
+    # ★★ 必须显式指定加载精度：TRL 把 model_init_kwargs 原样转给
+    #    AutoModelForCausalLM.from_pretrained，不传 dtype 时 transformers
+    #    默认按 **fp32** 加载（不是 checkpoint 里的 bf16）。
+    #    1.5B 模型因此白吃 3 GiB 显存 + 慢一倍，是这次 OOM 的一半原因。
+    import torch
+    dtype = args.dtype or ("fp32" if args.no_bf16 else "bf16")
+    if dtype != "fp32":
+        cfg["model_init_kwargs"] = {
+            "torch_dtype": torch.bfloat16 if dtype == "bf16" else "auto"
+        }
     if not args.no_vllm:
         cfg["vllm_mode"] = "colocate"
         cfg["vllm_gpu_memory_utilization"] = args.vllm_mem
@@ -167,6 +183,13 @@ def main():
     if args.use_lora and not args.no_grad_ckpt:
         trainer.model.enable_input_require_grads()
 
+    # 打印真实加载精度（fp32 会让 1.5B 白吃 3 GiB，必须能看到）
+    try:
+        _p = next(trainer.model.parameters())
+        print(f"模型加载精度: {_p.dtype}  （期望 bfloat16，若是 float32 说明 dtype 没传下去）")
+    except Exception:
+        pass
+
     print(f"\n开始训练（观察 reward 是否上升）")
     print(f"  模型 {args.model} | G={args.num_generations} | steps={args.steps} "
           f"| batch={args.batch_size} | max_len={args.max_completion_length} "
@@ -174,6 +197,18 @@ def main():
     print(f"  提示：单步 = {args.batch_size // args.num_generations} 个 prompt "
           f"× G={args.num_generations} 条回答")
     print("-" * 62)
+
+    # 每步打印真实显存峰值，跑完就能校准预算器
+    from transformers import TrainerCallback
+
+    class _PeakMem(TrainerCallback):
+        def on_log(self, a, state, control, logs=None, **kw):
+            if torch.cuda.is_available():
+                print(f"  [真实显存] step {state.global_step} "
+                      f"峰值 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB",
+                      flush=True)
+
+    trainer.add_callback(_PeakMem())
 
     trainer.train()
     trainer.save_model(args.out)
