@@ -69,12 +69,15 @@ def main():
     ap.add_argument("--top-p", type=float, default=0.95,
                     help="rollout top_p（TRL 默认 1.0）")
     ap.add_argument("--top-k", type=int, default=None,
-                    help="TRL 不填时会给 HF 传 top_k=-1，疑似被当成 k=1 → 贪心解码"
-                         "（组内生成全同 → advantage=0）。用 debug_completions.py "
-                         "的 local_checks() 判定后，传 0 或 50 覆盖")
+                    help="TRL 不填时会给 HF 传 top_k=-1；实测 -1 会被 "
+                         "TopKLogitsWarper 拒绝（HF 不建 warper，无害），"
+                         "仅在需要显式设 top_k 时使用")
+    ap.add_argument("--timeout", type=float, default=6.0)
+    ap.add_argument("--log-completions", action="store_true",
+                    help="★ 诊断用：把每一步 rollout 的原文/奖励/advantage 全部打出来"
+                         "（TRL 自带，配合 --steps 3 用，几毛钱看清真相）")
     ap.add_argument("--reward-mode", default="partial",
                     choices=["partial", "binary"], help="仅代码任务")
-    ap.add_argument("--timeout", type=float, default=6.0)
 
     # --- 显存与加速 ---
     ap.add_argument("--use-lora", action="store_true")
@@ -146,6 +149,9 @@ def main():
 
     if args.top_k is not None:
         cfg["top_k"] = args.top_k
+    if args.log_completions:
+        cfg["log_completions"] = True
+        cfg["num_completions_to_print"] = args.num_generations
 
     # ★★ 必须显式指定加载精度：TRL 把 model_init_kwargs 原样转给
     #    AutoModelForCausalLM.from_pretrained，不传 dtype 时 transformers
