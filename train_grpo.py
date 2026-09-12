@@ -41,7 +41,7 @@ DEFAULT_DATA = {
 
 # ★ 改代码后请更新这个字符串。它会被打印在日志第一行，
 #   用来一眼确认服务器上跑的是不是最新代码（git pull 静默失败过两次）。
-CODE_VERSION = "2026-08-18d  bf16加载 + 梯度检查点 + rollout强制eval（修乱码）+ 显存预算"
+CODE_VERSION = "2026-08-18e  bf16加载 + 梯度检查点 + rollout强制eval(修乱码+指标回填) + 显存预算"
 
 
 def main():
@@ -221,9 +221,21 @@ def main():
             def _gen_eval(inputs, _orig=_orig_gen, _tr=trainer):
                 _tr.model.eval()
                 try:
-                    return _orig(inputs)
+                    out = _orig(inputs)
                 finally:
                     _tr.model.train()
+                # ★ 副作用修正：TRL 用 `self.model.training` 判定指标归属
+                #   （grpo_trainer.py:1055 `mode = "train" if self.model.training
+                #   else "eval"`）。我们刚把模型切成 eval，rollout 的全部指标
+                #   （reward / reward_std / frac_reward_zero_std / completions/*）
+                #   就被记进了 _metrics["eval"]，训练日志里看不到 reward 曲线。
+                #   这里把它们搬回 "train"。
+                _ev = _tr._metrics.get("eval")
+                if _ev:
+                    for _k, _v in list(_ev.items()):
+                        _tr._metrics["train"][_k].extend(_v)
+                    _ev.clear()
+                return out
 
             trainer._generate_and_score_completions = _gen_eval
             print("rollout: 已强制 eval 模式（关掉梯度检查点/dropout 对生成的干扰）")
