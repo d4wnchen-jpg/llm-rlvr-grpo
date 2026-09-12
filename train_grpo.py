@@ -46,6 +46,8 @@ def main():
 
     # --- RL 超参 ---
     ap.add_argument("--steps", type=int, default=10)
+    ap.add_argument("--save-steps", type=int, default=50,
+                    help="每 N 步存一次 checkpoint（防跑一半崩了全白跑）")
     ap.add_argument("--num-generations", type=int, default=4, help="GRPO 组大小 G")
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--grad-accum", type=int, default=1)
@@ -94,7 +96,7 @@ def main():
         beta=args.beta,
         max_steps=args.steps,
         logging_steps=1,
-        save_steps=max(args.steps, 1),
+        save_steps=args.save_steps,
         bf16=not args.no_bf16,
         report_to=[],
         use_vllm=not args.no_vllm,
