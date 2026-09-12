@@ -24,8 +24,12 @@
     ③ 更简单稳定，DeepSeek-R1 用的就是这条路线
 """
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# ★ 必须在任何 CUDA 初始化之前设置：缓解显存碎片（OOM 常见诱因之一）
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reward import make_gsm8k_reward_fn, make_reward_fn  # noqa: E402
@@ -66,6 +70,8 @@ def main():
     ap.add_argument("--no-vllm-sleep", action="store_true")
     ap.add_argument("--vllm-mem", type=float, default=0.3)
     ap.add_argument("--no-bf16", action="store_true")
+    ap.add_argument("--no-grad-ckpt", action="store_true",
+                    help="关闭梯度检查点（默认开启：用重算换显存，峰值降 30-40%%）")
     args = ap.parse_args()
 
     args.data = args.data or DEFAULT_DATA[args.task]
@@ -100,6 +106,10 @@ def main():
         bf16=not args.no_bf16,
         report_to=[],
         use_vllm=not args.no_vllm,
+        # ★ 显存关键：GRPO 要同时装 policy + reference 两份前向，激活显存翻倍。
+        #   use_reentrant=False 是 PEFT/新版 torch 的必需写法。
+        gradient_checkpointing=not args.no_grad_ckpt,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
     if not args.no_vllm:
         cfg["vllm_mode"] = "colocate"
@@ -141,9 +151,17 @@ def main():
         peft_config=peft_config,
     )
 
+    # ★ LoRA + 梯度检查点：让 input embedding 输出 requires_grad，
+    #   否则 checkpoint 段的反传拿不到梯度（报 does not require grad）
+    if args.use_lora and not args.no_grad_ckpt:
+        trainer.model.enable_input_require_grads()
+
     print(f"\n开始训练（观察 reward 是否上升）")
     print(f"  模型 {args.model} | G={args.num_generations} | steps={args.steps} "
-          f"| batch={args.batch_size} | max_len={args.max_completion_length}")
+          f"| batch={args.batch_size} | max_len={args.max_completion_length} "
+          f"| grad_ckpt={not args.no_grad_ckpt}")
+    print(f"  提示：单步 = {args.batch_size // args.num_generations} 个 prompt "
+          f"× G={args.num_generations} 条回答")
     print("-" * 62)
 
     trainer.train()
