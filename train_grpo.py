@@ -68,6 +68,10 @@ def main():
                     help="rollout 采样温度（TRL 默认 1.0，实测太散、CoT 收不住尾）")
     ap.add_argument("--top-p", type=float, default=0.95,
                     help="rollout top_p（TRL 默认 1.0）")
+    ap.add_argument("--top-k", type=int, default=None,
+                    help="TRL 不填时会给 HF 传 top_k=-1，疑似被当成 k=1 → 贪心解码"
+                         "（组内生成全同 → advantage=0）。用 debug_completions.py "
+                         "的 local_checks() 判定后，传 0 或 50 覆盖")
     ap.add_argument("--reward-mode", default="partial",
                     choices=["partial", "binary"], help="仅代码任务")
     ap.add_argument("--timeout", type=float, default=6.0)
@@ -139,6 +143,9 @@ def main():
         gradient_checkpointing=not args.no_grad_ckpt,
         gradient_checkpointing_kwargs={"use_reentrant": False},
     )
+
+    if args.top_k is not None:
+        cfg["top_k"] = args.top_k
 
     # ★★ 必须显式指定加载精度：TRL 把 model_init_kwargs 原样转给
     #    AutoModelForCausalLM.from_pretrained，不传 dtype 时 transformers
