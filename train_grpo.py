@@ -39,8 +39,13 @@ DEFAULT_DATA = {
     "code": "data/mbpp_train.jsonl",
 }
 
+# ★ 改代码后请更新这个字符串。它会被打印在日志第一行，
+#   用来一眼确认服务器上跑的是不是最新代码（git pull 静默失败过两次）。
+CODE_VERSION = "2026-08-18c  bf16加载 + 梯度检查点默认开 + 显存预算"
+
 
 def main():
+    print(f"=== train_grpo.py 代码版本: {CODE_VERSION} ===", flush=True)
     ap = argparse.ArgumentParser()
     # --- 任务 ---
     ap.add_argument("--task", default="gsm8k", choices=["gsm8k", "code"])
@@ -183,10 +188,21 @@ def main():
     if args.use_lora and not args.no_grad_ckpt:
         trainer.model.enable_input_require_grads()
 
-    # 打印真实加载精度（fp32 会让 1.5B 白吃 3 GiB，必须能看到）
+    # 打印真实加载精度（fp32 会让 1.5B 白吃 2.9 GiB，必须能看到）
     try:
         _p = next(trainer.model.parameters())
-        print(f"模型加载精度: {_p.dtype}  （期望 bfloat16，若是 float32 说明 dtype 没传下去）")
+        _ok_dtype = _p.dtype == torch.bfloat16 if not args.no_bf16 else True
+        print(f"模型加载精度: {_p.dtype}"
+              f"{'  ✓' if _ok_dtype else '  ❌ 期望 bfloat16，dtype 没传下去'}")
+    except Exception:
+        pass
+
+    # 打印运行时真实是否开启了梯度检查点（不只是看参数）
+    try:
+        _gc = [n for n, m in trainer.model.named_modules()
+               if getattr(m, "gradient_checkpointing", False)]
+        print(f"梯度检查点(运行时): {'✓ 已开启 ' + str(_gc[:1]) if _gc else '❌ 未开启'}"
+              f"   [参数要求 grad_ckpt={not args.no_grad_ckpt}]")
     except Exception:
         pass
 
