@@ -16,6 +16,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reward import compute_gsm8k_reward, extract_gsm8k_answer  # noqa: E402
 
 
+def local_checks():
+    """不需要 GPU：直接判定 TRL 传给 HF 的 top_k=-1 是什么效果。"""
+    import torch
+
+    print("=" * 72)
+    print("[0] 本地判定：top_k=-1 在 HF 采样里保留几个 token？")
+    try:
+        from transformers.generation.logits_process import TopKLogitsWarper
+        for tk in (-1, 0, 50):
+            try:
+                w = TopKLogitsWarper(top_k=tk, min_tokens_to_keep=1)
+                scores = torch.randn(1, 8)
+                out = w(torch.zeros((1, 2), dtype=torch.long), scores.clone())
+                kept = int((out[0] > -1e30).sum().item())
+                print(f"      top_k={tk:>3} → 保留 {kept}/8 个 token "
+                      f"{'★★★ 只留 1 个 = 贪心解码！' if kept == 1 else ''}")
+            except Exception as e:
+                print(f"      top_k={tk:>3} → 异常 {type(e).__name__}: {e}")
+    except Exception as e:
+        print(f"      (无法测试 TopKLogitsWarper: {e})")
+
+    try:
+        import inspect
+        from transformers.generation.utils import GenerationMixin
+        print("      HF _get_logits_warper 里跟 top_k 有关的行：")
+        for line in inspect.getsource(GenerationMixin._get_logits_warper).splitlines():
+            if "top_k" in line:
+                print(f"        {line.strip()}")
+    except Exception as e:
+        print(f"      (无法读取 _get_logits_warper: {e})")
+    print("=" * 72)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
@@ -23,7 +56,11 @@ def main():
     ap.add_argument("--num-problems", type=int, default=2)
     ap.add_argument("--num-samples", type=int, default=3)
     ap.add_argument("--max-new-tokens", type=int, default=512)
+    ap.add_argument("--skip-local", action="store_true")
     args = ap.parse_args()
+
+    if not args.skip_local:
+        local_checks()
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -57,20 +94,29 @@ def main():
         print(f"题目 {pi+1} | prompt {n} token | gold={row['answer']}")
         print(f"prompt 结尾: {text[-90:]!r}")
 
-        for tag, temp, topp in [("TRL 默认 T=1.0 top_p=1.0", 1.0, 1.0),
-                                ("baseline T=0.8 top_p=0.95", 0.8, 0.95)]:
+        configs = [
+            ("A. 裸测 T=1.0 top_p=1.0（前一次测试）",
+             dict(temperature=1.0, top_p=1.0)),
+            ("B. TRL 实际参数（多传了 top_k=-1）",
+             dict(temperature=1.0, top_p=1.0, top_k=-1,
+                  repetition_penalty=1.0, min_p=None)),
+            ("C. baseline T=0.8 top_p=0.95",
+             dict(temperature=0.8, top_p=0.95)),
+        ]
+        for tag, extra in configs:
             inputs = tok(text, return_tensors="pt").to(model.device)
+            kw = dict(max_new_tokens=args.max_new_tokens, do_sample=True,
+                      num_return_sequences=args.num_samples,
+                      pad_token_id=tok.pad_token_id, eos_token_id=tok.eos_token_id)
+            kw.update(extra)
             with torch.no_grad():
-                gen = model.generate(
-                    **inputs, max_new_tokens=args.max_new_tokens,
-                    do_sample=True, temperature=temp, top_p=topp,
-                    num_return_sequences=args.num_samples,
-                    pad_token_id=tok.pad_token_id, eos_token_id=tok.eos_token_id,
-                )
-            print(f"\n  --- {tag} ---")
+                gen = model.generate(**inputs, **kw)
             plen = inputs["input_ids"].shape[1]
-            for j, seq in enumerate(gen):
-                new = seq[plen:]
+            news = [seq[plen:] for seq in gen]
+            distinct = len({tuple(s.tolist()) for s in news})
+            flag = "  ★★★ 组内全同 = 贪心解码！" if distinct == 1 and len(news) > 1 else ""
+            print(f"\n  --- {tag} ---  组内不同样本 {distinct}/{len(news)}{flag}")
+            for j, new in enumerate(news):
                 raw = tok.decode(new, skip_special_tokens=False)
                 clean = tok.decode(new, skip_special_tokens=True)
                 has_eos = bool((new == tok.eos_token_id).any())
@@ -81,12 +127,11 @@ def main():
 
     print(f"\n{'=' * 72}")
     print("怎么读：")
-    print("  · 若 T=1.0 全都不吐 EOS、T=0.8 正常收尾 → 元凶是采样参数，"
-          "训练加 --temperature 0.8 --top-p 0.95")
-    print("  · 若两组都不吐 EOS → prompt 格式问题（看上面 TRL 输出的结尾"
-          "是否是 '<|im_start|>assistant\\n'）")
-    print("  · 若都正常收尾但 reward=0 → reward 提取或 gold 对不上")
-    print("  · 若正常收尾但长度接近 512 → 单纯是 CoT 太长，加大 "
+    print("  · 若 B 组『组内全同 + 长度=512 + 不收尾』而 A/C 正常 → "
+          "元凶就是 TRL 传的 top_k=-1（等价贪心），必须在 cfg 里显式覆盖 top_k")
+    print("  · 若 B 组也正常 → TRL 的参数不是原因，改看 log_completions 打出的真实样本")
+    print("  · 若 A/B/C 都不吐 EOS → prompt 格式问题")
+    print("  · 若都正常收尾但长度接近 512 → 单纯是 CoT 太长，加大 "
           "--max-completion-length")
 
 

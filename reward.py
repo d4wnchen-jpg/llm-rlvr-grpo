@@ -125,12 +125,15 @@ NUM_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?")
 
 
 def normalize_number(s: str) -> str:
-    """把答案字符串标准化（去逗号/美元符/尾部句点，统一数值格式）。"""
+    """把答案字符串标准化（去 LaTeX 残留 / 逗号 / 美元符 / 尾部句点，统一数值格式）。"""
     if s is None:
         return ""
     s = str(s).strip()
-    s = s.replace(",", "").replace("$", "").replace("%", "").strip()
-    s = s.rstrip(".")
+    # 模型常写成 \(\boxed{\$108}\)，BOXED_RE 抓到的是 "\$108"（带反斜杠），
+    # 直接 float() 会失败 → 预测值变成 "\108" ≠ "108" → reward 被误判为 0。
+    s = re.sub(r"\\(?:text|mathrm|mathbf|mbox|operatorname)\s*\{([^{}]*)\}", r"\1", s)
+    s = s.replace("\\", "").replace(",", "").replace("$", "").replace("%", "").strip()
+    s = s.rstrip(".").strip()
     try:
         f = float(s)
         return str(int(f)) if f == int(f) else str(f)
@@ -263,6 +266,9 @@ if __name__ == "__main__":
         ("After thinking, the result is 99", "72", 0.0),
         ("<think>maybe 72</think>\\boxed{13}", "72", 0.0),
         ("", "72", 0.0),
+        # ← 实测模型最常见的写法：\(...\) 包裹 + 转义美元符
+        ("So the total is \\(\\boxed{\\$108}\\).", "108", 1.0),
+        ("\\[ \\boxed{24} \\]", "24", 1.0),
     ]
     for text, gold, expect in gsm_cases:
         got = compute_gsm8k_reward(text, gold)
