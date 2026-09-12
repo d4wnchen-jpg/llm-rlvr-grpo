@@ -79,6 +79,17 @@ def main():
     from datasets import load_dataset
     from trl import GRPOConfig, GRPOTrainer
 
+    # ---------- 显存预算：OOM 之前先把峰值算出来 ----------
+    # 只读 HF config，不加载权重，几秒钟。会顺便给出安全 batch 建议。
+    try:
+        from mem_budget import report as mem_report
+        mem_report(args.batch_size, args.model, args.max_prompt_length,
+                   args.max_completion_length, args.num_generations,
+                   args.lora_r if args.use_lora else None,
+                   not args.no_grad_ckpt, not args.no_vllm, args.vllm_mem)
+    except Exception as e:  # 估算是辅助功能，不能因为估算失败挡住训练
+        print(f"（显存预算估算跳过: {type(e).__name__}: {e}）")
+
     ds = load_dataset("json", data_files=args.data, split="train")
     print(f"task={args.task} | 训练集 {len(ds)} 条 ← {args.data}")
 
