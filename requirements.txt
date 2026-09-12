@@ -1,0 +1,11 @@
+# RL 训练环境
+#
+# ★ 关键约束：TRL 官方只支持 vLLM 0.19.1 ~ 0.29.0
+#   用 trl[vllm] 一条装好（自动拉匹配的 vllm + torch），别手动分开装
+
+trl[vllm]
+datasets
+peft
+
+# ---- 可选 ----
+# evaluate        # 指标计算

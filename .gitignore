@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.cache/
+
+# 数据（脚本自动下载，不入库）
+data/
+
+# 训练产物
+outputs/
+results/*.json
+
+# 可选：保留 results/ 里的汇总图表
+!results/*.md
+!results/*.png
