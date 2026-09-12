@@ -41,7 +41,7 @@ DEFAULT_DATA = {
 
 # ★ 改代码后请更新这个字符串。它会被打印在日志第一行，
 #   用来一眼确认服务器上跑的是不是最新代码（git pull 静默失败过两次）。
-CODE_VERSION = "2026-08-18c  bf16加载 + 梯度检查点默认开 + 显存预算"
+CODE_VERSION = "2026-08-18d  bf16加载 + 梯度检查点 + rollout强制eval（修乱码）+ 显存预算"
 
 
 def main():
