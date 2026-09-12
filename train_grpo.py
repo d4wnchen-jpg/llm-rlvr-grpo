@@ -64,6 +64,10 @@ def main():
     ap.add_argument("--max-completion-length", type=int, default=256)
     ap.add_argument("--max-prompt-length", type=int, default=384)
     ap.add_argument("--beta", type=float, default=0.04, help="KL 系数")
+    ap.add_argument("--temperature", type=float, default=0.8,
+                    help="rollout 采样温度（TRL 默认 1.0，实测太散、CoT 收不住尾）")
+    ap.add_argument("--top-p", type=float, default=0.95,
+                    help="rollout top_p（TRL 默认 1.0）")
     ap.add_argument("--reward-mode", default="partial",
                     choices=["partial", "binary"], help="仅代码任务")
     ap.add_argument("--timeout", type=float, default=6.0)
@@ -122,6 +126,8 @@ def main():
         max_completion_length=args.max_completion_length,
         max_prompt_length=args.max_prompt_length,
         beta=args.beta,
+        temperature=args.temperature,
+        top_p=args.top_p,
         max_steps=args.steps,
         logging_steps=1,
         save_steps=args.save_steps,
