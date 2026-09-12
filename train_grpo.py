@@ -41,7 +41,7 @@ DEFAULT_DATA = {
 
 # ★ 改代码后请更新这个字符串。它会被打印在日志第一行，
 #   用来一眼确认服务器上跑的是不是最新代码（git pull 静默失败过两次）。
-CODE_VERSION = "2026-08-18e  bf16加载 + 梯度检查点 + rollout强制eval(修乱码+指标回填) + 显存预算"
+CODE_VERSION = "2026-08-18f  bf16加载 + 梯度检查点 + rollout强制eval(修乱码+指标回填) + 显存预算"
 
 
 def main():
@@ -61,6 +61,14 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--grad-accum", type=int, default=1)
     ap.add_argument("--lr", type=float, default=1e-6)
+    ap.add_argument("--lr-scheduler-type", default="constant_with_warmup",
+                    choices=["linear", "cosine", "constant",
+                             "constant_with_warmup", "cosine_with_restarts",
+                             "polynomial", "inverse_sqrt", "reduce_lr_on_plateau"],
+                    help="★ 默认从 linear 改成 constant_with_warmup：linear 会让 lr "
+                         "在 max_steps 处衰减到 0，最后 1/3 基本学不到东西"
+                         "（实测 run1 第 130 步 lr 只剩 23%%，kl 始终停在 2e-4）")
+    ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--max-completion-length", type=int, default=256)
     ap.add_argument("--max-prompt-length", type=int, default=384)
     ap.add_argument("--beta", type=float, default=0.04, help="KL 系数")
@@ -129,6 +137,8 @@ def main():
     cfg = dict(
         output_dir=args.out,
         learning_rate=args.lr,
+        lr_scheduler_type=args.lr_scheduler_type,
+        warmup_ratio=args.warmup_ratio,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         num_generations=args.num_generations,
