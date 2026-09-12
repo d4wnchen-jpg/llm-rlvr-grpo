@@ -221,17 +221,34 @@ def main():
           f"× G={args.num_generations} 条回答")
     print("-" * 62)
 
-    # 每步打印真实显存峰值，跑完就能校准预算器
+    # 每步打印真实显存峰值 + 空转检测（reward 全 0 且组内无方差 = 梯度恒 0）
     from transformers import TrainerCallback
 
-    class _PeakMem(TrainerCallback):
-        def on_log(self, a, state, control, logs=None, **kw):
-            if torch.cuda.is_available():
-                print(f"  [真实显存] step {state.global_step} "
-                      f"峰值 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB",
-                      flush=True)
+    class _HealthCheck(TrainerCallback):
+        def __init__(self):
+            self.dead = 0
 
-    trainer.add_callback(_PeakMem())
+        def on_log(self, a, state, control, logs=None, **kw):
+            logs = logs or {}
+            if torch.cuda.is_available():
+                print(f"  [真实显存] step {state.global_step} 峰值 "
+                      f"{torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
+
+            r, z = logs.get("reward"), logs.get("frac_reward_zero_std")
+            self.dead = self.dead + 1 if (r == 0.0 and z == 1.0) else 0
+            if self.dead == 5:
+                print("\n⚠️  连续 5 步 reward 全 0 且组内无方差 → advantage=0 → 梯度恒为 0，"
+                      "这一步都没学到东西！\n"
+                      f"   当前 completions/clipped_ratio="
+                      f"{logs.get('completions/clipped_ratio')}, "
+                      f"mean_length={logs.get('completions/mean_length')}\n"
+                      "   若 clipped_ratio=1 说明 rollout 不吐 EOS（采样温度/长度问题）；"
+                      "先跑 debug_completions.py\n", flush=True)
+            if self.dead >= 20:
+                print("\n❌ 连续 20 步零梯度，自动停止训练，避免继续白烧卡时。\n", flush=True)
+                control.should_training_stop = True
+
+    trainer.add_callback(_HealthCheck())
 
     trainer.train()
     trainer.save_model(args.out)
