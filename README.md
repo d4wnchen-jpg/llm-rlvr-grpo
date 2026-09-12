@@ -83,6 +83,31 @@ GRPOConfig(vllm_enable_sleep_mode=True)
 优化步骤时把 vLLM 的权重和 KV cache **卸载到 CPU 内存**，生成时再拉回 GPU。
 （本仓库脚本已默认开启。）
 
+### 4. 单卡 GRPO 显存怎么估（选配置前先算）
+
+`mem_budget.py` 不加载权重、只读 HF config，秒级打印下表并给出「放得下 / 会 OOM」判定
+和安全 batch 建议。六个大块里有两块最反直觉：
+
+| 显存块 | 公式 | batch16 / completion512 的估算 |
+|---|---|---|
+| 权重 | `P × 2B`（bf16）★ 不传 `torch_dtype` 会按 **fp32** 加载，直接翻倍 | 2.88 GiB（fp32 → 5.74）|
+| LoRA + AdamW | adapter 参数量 × 10B（grad + m + v）| 0.34 GiB |
+| rollout KV cache | `B × (P_len+L) × layers × 2 × n_kv × head_dim × 2B` | 0.38 GiB |
+| **logits** | `B × L × vocab × 2B` ★ 与模型大小**无关**，只跟 batch×长度×词表有关 | 2.32 GiB |
+| **logp** | `B × L × vocab × 4B` ★ autocast 把 softmax/log_softmax 强制走 fp32，是 **4 字节**不是 2 | 4.64 GiB |
+| **激活** | 开检查点 ≈ `layers × B(P+L) × H × 2`；**不开 ≈ `layers × B(P+L) × (6H+2I) × 2`** | 2.22 / **21.3** GiB |
+
+三条结论（面试可直接讲）：
+
+1. **梯度检查点是单卡 GRPO 的生死线**：1.5B 在 batch16 × 896 token 下，光激活就 **21 GiB**，必爆。
+2. **模型绝不能按 fp32 加载**：`from_pretrained` 不传 `torch_dtype` 时默认 fp32，
+   **config.json 里的 `torch_dtype: bfloat16` 不参与这个决定**，1.5B 白吃 2.9 GiB 且慢一倍。
+3. **logits 那块跟模型多大无关**，正比于 `batch × completion_length × vocab` ——
+   所以小模型 + 大词表（151936）照样爆；真正有效的旋钮是降 batch 或降 `max_completion_length`。
+   想保住有效 batch 就用 **`--batch-size 8 --grad-accum 2`**：TRL 的 `steps_per_generation`
+   默认等于 `grad_accum`，会一次生成 16 条再拆成 2 个微批做前向/反向 ——
+   **有效 batch 不变，峰值按 8 条算（11.6 GiB）**。
+
 ## 防污染设计（可验证）
 
 ```
@@ -105,29 +130,35 @@ MBPP : 训练 full − sanitized (547)  |  评测 EvalPlus (MBPP+)
 ## 快速开始
 
 ```bash
-# 1. 环境（★ TRL 官方只支持 vLLM 0.19.1~0.29.0，用 trl[vllm] 一条装好）
-pip install "trl[vllm]" datasets peft
+# 1. 环境（★ 必须钉版本：只声明下界的依赖会装出不兼容的大版本，见踩坑表）
+pip install "transformers<5" "trl==0.19.1" datasets peft
+#    国内另需：export HF_ENDPOINT=https://hf-mirror.com
 
 # 2. 数据（GitHub 直下，不依赖 HuggingFace）
 python prepare_data.py --task gsm8k          # 7473 题
 python prepare_data.py --task code           # 547 题（可选）
 
-# 3. ★ 训练前必做：检查是否有学习信号
+# 3. ★ 开跑前先算显存（秒级，不占 GPU）
+python mem_budget.py --batch-size 8 --num-generations 8 --grad-accum 2 \
+    --max-completion-length 512
+#    看结尾的「✅ 放得下 / ❌ 大概率 OOM」再决定是否开跑
+
+# 4. ★ 训练前必做：检查是否有学习信号
 python check_baseline.py --task gsm8k \
-    --model Qwen/Qwen2.5-1.5B-Instruct --num-problems 20 --num-samples 4
+    --model Qwen/Qwen2.5-1.5B-Instruct --num-problems 20 --num-samples 8
 #    看「★ 有信号的题比例」：≥50% 才继续
 
-# 4. pilot（10 步，验证链路）
+# 5. pilot（10 步，验证链路）
 python train_grpo.py --task gsm8k --use-lora \
     --steps 10 --num-generations 4 --batch-size 4 \
     --max-completion-length 256 --out outputs/pilot
 
-# 5. 正式训练
-python train_grpo.py --task gsm8k --use-lora \
-    --steps 300 --num-generations 8 --batch-size 8 \
-    --max-completion-length 512 --out outputs/full
+# 6. 正式训练（batch 8 + grad_accum 2 = 有效 batch 16，峰值按 8 条算）
+python train_grpo.py --task gsm8k --use-lora --no-vllm \
+    --steps 150 --num-generations 8 --batch-size 8 --grad-accum 2 \
+    --max-completion-length 512 --save-steps 50 --out outputs/full
 
-# 6. 评测（held-out）
+# 7. 评测（held-out）
 python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
 ```
 
@@ -138,16 +169,21 @@ python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
 | `reward.py` | 两个任务的 reward（GSM8K 正则比对 / 代码执行测试），可独立自测 |
 | `prepare_data.py` | 数据准备（`--task gsm8k\|code`），含防污染排除 |
 | `check_baseline.py` | **训练前必做**：测通过率 + ★组内学习信号 |
-| `train_grpo.py` | GRPO 训练（TRL + vLLM colocate + sleep mode）|
+| `mem_budget.py` | **开跑前必做**：秒级估算显存峰值、判定能否放下、给安全 batch 建议 |
+| `train_grpo.py` | GRPO 训练（TRL，可选 vLLM colocate + sleep mode）｜启动即打印版本/精度/显存预算 |
 | `eval_grpo.py` | 评测 held-out（vLLM 推理，自动回退 transformers）|
 
 ## 环境与预算
 
 | 项 | 配置 |
 |---|---|
-| GPU | RTX 4090 24G × 1（1.5B GRPO 峰值约 10G）|
-| 依赖 | `trl[vllm]` + datasets + peft |
+| GPU | RTX 4090 24G × 1 |
+| 依赖 | torch 2.5.1+cu124（镜像）、**transformers 4.57.6**、**trl 0.19.1**、datasets、peft |
+| 显存 | 1.5B + LoRA r32 + 梯度检查点，batch8×grad_accum2：**预算峰值 11.6 GiB** |
 | 预算 | 约 ¥32-53（16-27 卡时 × ¥2/h）|
+
+> vLLM 本机暂未启用：vLLM 0.8.x 要求 torch ≥ 2.6，与镜像的 2.5.1 冲突。
+> 上 vLLM 需先升 torch，收益是 rollout 大幅加速（当前 `--no-vllm` 用 HF generate）。
 
 ## 踩过的坑（工程记录）
 
@@ -156,8 +192,13 @@ python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
 | 奖励饱和（组内 reward 全同 → advantage=0）| 先跑 `check_baseline.py` 测信号；必要时换更小模型或筛题 |
 | 单卡训练与 vLLM 抢显存 | `vllm_enable_sleep_mode=True`（卸载到 CPU 内存）|
 | MBPP 数据与 EvalPlus 评测集重叠 | 训练用 `full − sanitized`，脚本自动排除 |
-| TRL ↔ vLLM 版本耦合 | 用 `pip install "trl[vllm]"`（支持 vLLM 0.19.1~0.29.0）|
 | HF 网络不通 | 数据从 GitHub 直下（含 gh-proxy 兜底）|
+| **依赖只声明下界 → pip 装到不兼容大版本** | TRL 0.20+ 用 `FSDPModule`（需 torch≥2.6）、transformers 5.x 让 `_is_package_available('vllm')` 返回恒真 tuple → `import trl` 崩。**钉死 `transformers<5` + `trl==0.19.1`** |
+| **`git pull` 报 `HTTP2 framing layer` 静默失败** | 服务器一直跑旧代码，白烧两轮 GPU。修：`git config --global http.version HTTP/1.1`；脚本第一行打印 `CODE_VERSION`，日志里能自证版本 |
+| **OOM 元凶之一：没开梯度检查点** | 每层要留 `6H+2I` 个中间量 → batch16×896token×28层 = **21 GiB 激活**。`train_grpo.py` 默认开启 |
+| **OOM 元凶之二：模型按 fp32 加载** | 不传 `torch_dtype` 时 `from_pretrained` 默认 fp32（config 里的 bf16 不作数）。显式传 `torch_dtype=torch.bfloat16` |
+| **OOM 元凶之三：logp 被 autocast 抬成 fp32** | `softmax/log_softmax` 在 autocast 的 fp32 强制列表里，`B×L×V` 那份是 4 字节/元素。降低 batch / `max_completion_length` 才有效 |
+| 显存靠拍脑袋估 → 反复 OOM | 先跑 `mem_budget.py`（秒级、不上 GPU），按理论值 × 1.5 的标定系数和安全线判定 |
 
 ## License
 
