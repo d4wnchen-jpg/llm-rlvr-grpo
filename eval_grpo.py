@@ -113,6 +113,9 @@ def main():
                          "151643 <|endoftext|>），HF 会继承两个，而 vLLM 自己推的集合可能不同 "
                          "—— 不给 vLLM 传 stop_token_ids 属于同一类隐式协议风险")
     ap.add_argument("--out", default=None, help="结果 json 路径")
+    ap.add_argument("--save-completions", action="store_true",
+                    help="把每条完整回答原文也写进 json（用于分析 CoT 长度 / 自我纠错标记，"
+                         "文件会变大到 ~1.5 MB，compare_results.py 会忽略这个字段）")
     args = ap.parse_args()
 
     base_name, adapter = resolve_model(args.model)
@@ -221,12 +224,15 @@ def main():
     for row, out in zip(rows, outputs):
         r = compute_gsm8k_reward(out, row["gold"])
         correct += int(r >= 1.0)
-        details.append({
+        d = {
             "question": row["question"][:200],
             "gold": row["gold"],
             "pred": extract_gsm8k_answer(out),
             "correct": bool(r >= 1.0),
-        })
+        }
+        if args.save_completions:
+            d["completion"] = out
+        details.append(d)
 
     acc = correct / len(rows)
 
