@@ -30,6 +30,9 @@ import argparse
 
 GiB = 2 ** 30
 SAFETY = 1.5        # 实测标定：理论值 → 预算值
+                    # ⚠️ 标定点来自 LoRA + fp32 + batch16 那次爆卡，对**全参微调**
+                    #    未必成立（优化器状态占比大得多，碎片特性也不同）
+                    #    → 全参模式把结果当粗略下界看，别当保证
 FIT_RATIO = 0.85    # 预算值低于显存的 85% 才认为安全
 
 
@@ -83,10 +86,24 @@ def estimate(g, batch, prompt_len, comp_len, lora_r=None, grad_ckpt=True,
     layer_bytes = tok * (6 * g["H"] + 2 * g["I"]) * 2          # 一层全部中间量(bf16)
 
     weights = g["params"] * wbytes                             # bf16=2, fp32=4
-    optim = 0.0
+
+    # ★ 优化器状态。旧版 `if lora_r:` 在 --no-lora（全参）时把 optim 置 0，
+    #   低估约 14 GiB —— 会得出"放得下"的错误结论。全参微调的优化器状态是
+    #   **全部参数**的，不是 0。
+    #   bf16 训练：grad(wbytes) + AdamW exp_avg/exp_avg_sq(fp32 ×2 = 8)
     if lora_r:
-        lp = lora_param_count(g, lora_r)
-        optim = lp * 2 + lp * 4 * 2                            # grad + AdamW m,v
+        n_train = lora_param_count(g, lora_r)
+        lora_w = n_train * wbytes         # LoRA 权重本身（旧版也漏算了这一项）
+    else:
+        n_train = g["params"]
+        lora_w = 0.0
+    optim = lora_w + n_train * (wbytes + 8)
+
+    # ★ 参考模型。GRPO 要算 ref logprobs：
+    #   LoRA 时 TRL 用「关掉 adapter 的基座」当 ref（零额外显存）；
+    #   全参微调必须保留一份**冻结副本** → 多一份权重。
+    ref = 0.0 if lora_r else g["params"] * wbytes
+
     kv = G * (Pl + L) * g["N"] * 2 * g["nkv"] * g["d"] * 2     # rollout KV cache
     logits_div = B * L * g["V"] * 2                            # 除以温度后的 bf16
     logp_saved = B * L * g["V"] * 4                            # autocast → fp32
@@ -100,7 +117,8 @@ def estimate(g, batch, prompt_len, comp_len, lora_r=None, grad_ckpt=True,
 
     items = {
         f"权重({'bf16' if wbytes == 2 else 'fp32'})": weights,
-        "LoRA+AdamW": optim,
+        ("LoRA+AdamW" if lora_r else "梯度+AdamW(全参)"): optim,
+        "参考模型(ref)": ref,
         "rollout KV": kv,
         "logits(bf16)": logits_div,
         "logp(fp32)": logp_saved,
@@ -110,7 +128,7 @@ def estimate(g, batch, prompt_len, comp_len, lora_r=None, grad_ckpt=True,
     if vllm:
         items["vLLM 预留"] = vllm
 
-    fixed = weights + ctx + vllm
+    fixed = weights + ref + ctx + vllm
     var = optim + kv + logits_div + logp_saved + acts
     return items, fixed + var * safety, dict(fixed=fixed, var=var, safety=safety)
 
@@ -142,7 +160,8 @@ def report(batch, model="Qwen/Qwen2.5-1.5B-Instruct", prompt_len=384,
     print(f"  batch={batch}(completions/微批)  G={num_gen}  grad_accum={grad_accum}"
           f"  →  有效 {batch * grad_accum} completions/步 = {prompts_per_step} 个 prompt/步")
     print(f"  prompt≤{prompt_len}  completion≤{comp_len}")
-    print(f"  权重={'bf16' if wbytes == 2 else 'fp32'}  |  LoRA r={lora_r}"
+    print(f"  权重={'bf16' if wbytes == 2 else 'fp32'}  |  "
+          f"{('LoRA r=' + str(lora_r)) if lora_r else '全参微调'}"
           f"  |  梯度检查点={'开' if grad_ckpt else '关'}  |  GPU {gpu_gib:.1f} GiB")
     print("-" * 66)
     for k, v in items.items():
