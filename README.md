@@ -404,7 +404,7 @@ python compare_results.py results/base300.json results/grpo300.json
 | `train_grpo.py` | GRPO 训练（TRL，可选 vLLM colocate + sleep mode）｜启动即打印版本/精度/显存预算 |
 | `eval_grpo.py` | 评测 held-out（支持 LoRA adapter 目录；vLLM 推理，自动回退 transformers）|
 | `compare_results.py` | 对照表 + **子集指纹校验** + **McNemar 配对显著性检验** |
-| `docs/EXPERIMENT_LOG.md` | **实验日志/交接文档**：环境事实、已完成的数字、机制诊断、run2 配置与监控命令、决策树 |
+| `docs/EXPERIMENT_LOG.md` | **实验日志**：环境事实、已完成的数字、机制诊断、run2 配置与监控命令 |
 
 ## 环境与预算
 
