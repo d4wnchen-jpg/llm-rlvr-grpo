@@ -41,7 +41,7 @@ DEFAULT_DATA = {
 
 # ★ 改代码后请更新这个字符串。它会被打印在日志第一行，
 #   用来一眼确认服务器上跑的是不是最新代码（git pull 静默失败过两次）。
-CODE_VERSION = "2026-08-18f  bf16加载 + 梯度检查点 + rollout强制eval(修乱码+指标回填) + 显存预算"
+CODE_VERSION = "2026-09-14a  bf16加载 + 梯度检查点 + rollout强制eval + 显存预算 + --seed"
 
 
 def main():
@@ -60,6 +60,10 @@ def main():
     ap.add_argument("--num-generations", type=int, default=4, help="GRPO 组大小 G")
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--grad-accum", type=int, default=1)
+    ap.add_argument("--seed", type=int, default=42,
+                    help="★ 随机种子。HF TrainingArguments 默认就是 42 —— 也就是说"
+                         "**所有历史 run 都是同一个种子**。它同时决定 dataloader 顺序和 "
+                         "rollout 采样流，所以换种子跑复现实验必须显式改这里")
     ap.add_argument("--lr", type=float, default=1e-6)
     ap.add_argument("--lr-scheduler-type", default="constant_with_warmup",
                     choices=["linear", "cosine", "constant",
@@ -136,6 +140,8 @@ def main():
     # ---------- 配置 ----------
     cfg = dict(
         output_dir=args.out,
+        seed=args.seed,
+        data_seed=args.seed,
         learning_rate=args.lr,
         lr_scheduler_type=args.lr_scheduler_type,
         warmup_ratio=args.warmup_ratio,
@@ -278,7 +284,7 @@ def main():
     print(f"\n开始训练（观察 reward 是否上升）")
     print(f"  模型 {args.model} | G={args.num_generations} | steps={args.steps} "
           f"| batch={args.batch_size} | max_len={args.max_completion_length} "
-          f"| grad_ckpt={not args.no_grad_ckpt}")
+          f"| grad_ckpt={not args.no_grad_ckpt} | seed={args.seed}")
     print(f"  提示：单步 = {args.batch_size // args.num_generations} 个 prompt "
           f"× G={args.num_generations} 条回答")
     print("-" * 62)
