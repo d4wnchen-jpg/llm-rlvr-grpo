@@ -12,7 +12,7 @@
         --steps 300 --num-generations 8 --batch-size 8 \
         --max-completion-length 512 --out outputs/full
 
-核心参数（面试会问）:
+核心参数:
     --num-generations (G)   每个 prompt 采样几个回答 = GRPO 组大小
     --max-completion-length 生成长度上限（越长 rollout 越慢）
     --use-lora              用 LoRA 省显存（1.5B 推荐）

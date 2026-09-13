@@ -14,3 +14,8 @@ results/*.json
 # 可选：保留 results/ 里的汇总图表
 !results/*.md
 !results/*.png
+
+# 内部笔记：不随仓库公开（选题评估、求职素材、AI 交接稿等）
+docs/INTERNAL*
+docs/PUBLISHABILITY.md
+docs/*_private.md

@@ -97,7 +97,7 @@ GRPOConfig(vllm_enable_sleep_mode=True)
 | **logp** | `B × L × vocab × 4B` ★ autocast 把 softmax/log_softmax 强制走 fp32，是 **4 字节**不是 2 | 4.64 GiB |
 | **激活** | 开检查点 ≈ `layers × B(P+L) × H × 2`；**不开 ≈ `layers × B(P+L) × (6H+2I) × 2`** | 2.22 / **21.3** GiB |
 
-三条结论（面试可直接讲）：
+三条结论：
 
 1. **梯度检查点是单卡 GRPO 的生死线**：1.5B 在 batch16 × 896 token 下，光激活就 **21 GiB**，必爆。
 2. **模型绝不能按 fp32 加载**：`from_pretrained` 不传 `torch_dtype` 时默认 fp32，
