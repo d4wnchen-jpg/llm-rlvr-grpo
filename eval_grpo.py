@@ -116,18 +116,30 @@ def main():
         print("  只有指纹相同的结果才能直接比较 —— 用 compare_results.py 会自动校验")
     print(f"评测：GSM8K test，{len(rows)} 题，模型 {args.model}")
 
-    prompts = [f"{r['question'].strip()}\n\n{GSM8K_INSTRUCTION}" for r in rows]
+    raw_prompts = [f"{r['question'].strip()}\n\n{GSM8K_INSTRUCTION}" for r in rows]
+
+    # ★★ 两个引擎（vLLM / transformers）必须用**完全相同**的 prompt。
+    #   之前 vLLM 分支把原始 prompt 直接喂进去、没套 chat template，
+    #   而 transformers 分支套了 —— 对 Instruct 模型这是巨大差异
+    #   （实测参考项目：无 chat template 0-shot 45.5% vs 带模板 69.8%）。
+    #   那会让"引擎一致性验证"看起来差 20 多个点，而根因是 prompt 格式。
+    from transformers import AutoTokenizer
+    load_name = base_name or args.model
+    tok = AutoTokenizer.from_pretrained(load_name)
+    prompts = [tok.apply_chat_template([{"role": "user", "content": p}],
+                                       tokenize=False, add_generation_prompt=True)
+               for p in raw_prompts]
 
     # ---------- 生成 ----------
     outputs = []
     # adapter 场景只用 transformers 路径（vLLM 加载 LoRA 需要额外配置，不冒险）
     use_vllm = (not args.no_vllm) and adapter is None
     if adapter and not args.no_vllm:
-        print("（LoRA adapter 走 transformers 路径）")
+        print("（LoRA adapter 走 transformers 路径；要跑 vLLM 请先用 merge_adapter.py 合并）")
     if use_vllm:
         try:
             from vllm import LLM, SamplingParams
-            print("用 vLLM 推理...")
+            print(f"用 vLLM 推理（同一个 chat template，贪心）...")
             llm = LLM(model=args.model, max_model_len=2048,
                       gpu_memory_utilization=0.85, dtype="bfloat16")
             sp = SamplingParams(temperature=args.temperature,
@@ -135,15 +147,13 @@ def main():
             results = llm.generate(prompts, sp)
             outputs = [r.outputs[0].text for r in results]
         except Exception as e:
-            print(f"vLLM 失败（{type(e).__name__}），回退 transformers")
+            print(f"vLLM 失败（{type(e).__name__}: {e}），回退 transformers")
             use_vllm = False
 
     if not use_vllm:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM
         print("用 transformers 推理（较慢）...")
-        load_name = base_name or args.model
-        tok = AutoTokenizer.from_pretrained(load_name)
         model = AutoModelForCausalLM.from_pretrained(
             load_name, torch_dtype=torch.bfloat16, device_map="auto")
         if adapter:
@@ -153,9 +163,7 @@ def main():
             print("  ✓ adapter 已合并进基座权重")
         model.eval()
         pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
-        chat = [tok.apply_chat_template([{"role": "user", "content": p}],
-                                        tokenize=False, add_generation_prompt=True)
-                for p in prompts]
+        chat = prompts          # 上面已经套好 chat template，两个引擎共用
         # ★ 批量左 padding 推理：比逐条快 4-6 倍。
         #   贪心解码下结果与逐条一致（被比较的模型必须用同一个 batch size）。
         bs = max(1, args.eval_batch_size)
