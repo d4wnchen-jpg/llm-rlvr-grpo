@@ -194,7 +194,7 @@ print(f\"{d.split('/')[-1]:<16} lora_B |max|={max(v.abs().max().item() for v in 
 | 选项 | 成本 | 说明 |
 |---|---|---|
 | **难度筛选**（离线预筛）| 一次性 ~1 h 筛 + 1 次训练 | 保留 `0<k<G` 的题（丢退化组）。**比"加步数"便宜约 10×/单位有效信号**（¥4 vs ¥22）|
-| 上 **vLLM** | 独立 venv，30 min 装 | **真正为筛题（10–30×）+ eval（15→2 min）**。训练提速只有 1.3–2×（我们固定 batch、等长序列，用不上连续批处理），且 0.19.1 **没有** vLLM↔策略分布的 importance sampling 修正 |
+| 上 **vLLM** | 独立 venv，30 min 装 | **真正为筛题（10–30×）+ eval**。实测一次全量 1319 题评测约 **30–36 分钟**（贪心输出长，很多题接近 512 token），vLLM 可降到 **~2–4 分钟**。训练提速只有 1.3–2×（我们固定 batch、等长序列，用不上连续批处理），且 0.19.1 **没有** vLLM↔策略分布的 importance sampling 修正。**注意：换引擎后所有被比较的模型都要用 vLLM 重跑**，否则协议不一致；另外 vLLM 路径目前不支持 LoRA adapter，需要加 `LoRARequest` 或先 merge 存成全模型 |
 | `use_liger_loss=True` | `pip install liger-kernel` + 5 行 | **训练侧最便宜的提速**：融合 `lm_head+log_softmax+loss`，省掉那份 logits（batch8/512 下 3.5 GiB），同时省显存和时间 |
 | 全参微调替代 LoRA | 显存紧（1.5B 全参 + AdamW ≈ 21 GiB） | 参考项目用的就是全参；若 LoRA 容量是瓶颈就得换它 |
 | **SFT 对照** | ~1 h | 参考项目 SFT **−15.2**；我们做了大概率也是负的——**对叙事有利**（印证旧项目负结果）|
