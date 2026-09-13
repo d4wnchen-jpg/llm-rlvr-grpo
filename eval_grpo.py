@@ -95,6 +95,10 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.0, help="评测用贪心")
+    ap.add_argument("--repetition-penalty", type=float, default=1.0,
+                    help="★ 必须显式传！HF 的 generate 会**静默继承**模型 generation_config "
+                         "里的 repetition_penalty（Qwen2.5 是 1.1），而 vLLM 默认 1.0 → "
+                         "两个引擎会差 10 个点。默认 1.0 与训练 rollout（TRL 默认）对齐")
     ap.add_argument("--batch-size", type=int, default=64, help="vLLM 批大小")
     ap.add_argument("--vllm-gpu-mem", type=float, default=0.75,
                     help="vLLM 显存占比。0.85 会在新版 vLLM 上因 KV cache 略微超出"
@@ -146,7 +150,8 @@ def main():
             llm = LLM(model=args.model, max_model_len=2048,
                       gpu_memory_utilization=args.vllm_gpu_mem, dtype="bfloat16")
             sp = SamplingParams(temperature=args.temperature,
-                                max_tokens=args.max_new_tokens)
+                                max_tokens=args.max_new_tokens,
+                                repetition_penalty=args.repetition_penalty)
             results = llm.generate(prompts, sp)
             outputs = [r.outputs[0].text for r in results]
         except Exception as e:
@@ -182,7 +187,8 @@ def main():
                       padding_side="left", add_special_tokens=False).to(model.device)
             with torch.no_grad():
                 gen = model.generate(**enc, max_new_tokens=args.max_new_tokens,
-                                     do_sample=False, pad_token_id=pad_id)
+                                     do_sample=False, pad_token_id=pad_id,
+                                     repetition_penalty=args.repetition_penalty)
             plen = enc["input_ids"].shape[1]
             for seq in gen:
                 outputs.append(tok.decode(seq[plen:], skip_special_tokens=True))
