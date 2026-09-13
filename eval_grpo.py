@@ -105,6 +105,9 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.0, help="评测用贪心")
+    ap.add_argument("--top-p", type=float, default=1.0,
+                    help="vLLM 采样 top_p。默认 1.0（= 之前的行为，不影响任何已有数字）。"
+                         "★ 想复现**训练 rollout 的解码口径**要传 0.95（训练侧 top_p=0.95）")
     ap.add_argument("--repetition-penalty", type=float, default=1.0,
                     help="★ 必须显式传！HF 的 generate 会**静默继承**模型 generation_config "
                          "里的 repetition_penalty（Qwen2.5 是 1.1），而 vLLM 默认 1.0 → "
@@ -187,6 +190,7 @@ def main():
             llm = LLM(model=args.model, max_model_len=2048,
                       gpu_memory_utilization=args.vllm_gpu_mem, dtype="bfloat16")
             sp = SamplingParams(temperature=args.temperature,
+                                top_p=args.top_p,
                                 max_tokens=args.max_new_tokens,
                                 repetition_penalty=args.repetition_penalty,
                                 stop_token_ids=eos_ids)
@@ -205,6 +209,13 @@ def main():
     if not use_vllm:
         import torch
         from transformers import AutoModelForCausalLM
+        # ★ 不要静默忽略采样参数：transformers 分支写死 do_sample=False（贪心），
+        #   传 --temperature 0.8 --no-vllm 会被无声吃掉，得到贪心结果却以为是采样。
+        if args.temperature != 0.0 or args.top_p != 1.0:
+            raise SystemExit(
+                f"✗ transformers 分支只支持贪心，但收到 temperature={args.temperature} "
+                f"top_p={args.top_p}。要么去掉这两个参数，要么走 vLLM 路径"
+                f"（不要静默回退成贪心）。")
         print("用 transformers 推理（较慢）...")
         model = AutoModelForCausalLM.from_pretrained(
             load_name, torch_dtype=torch.bfloat16, device_map="auto")
