@@ -29,6 +29,16 @@ GSM8K_BASE = ("https://raw.githubusercontent.com/openai/grade-school-math/"
 GSM8K_INSTRUCTION = ("Please reason step by step, and put your final answer "
                      "within \\boxed{}.")
 
+# ★ prompt 模板变体 —— 用来测「RL 的收益是不是只对训练用的那个模板成立」
+#   训练数据用的就是 default；alt 是**同义改写**（仍然要求 \boxed{}，只换措辞）；
+#   minimal 完全不给指令（会牵涉输出格式，解释时要小心）。
+PROMPT_VARIANTS = {
+    "default": lambda q: f"{q}\n\n{GSM8K_INSTRUCTION}",
+    "alt": lambda q: (f"{q}\n\nSolve the problem step by step, then put your "
+                      "final answer in \\boxed{}."),
+    "minimal": lambda q: q,
+}
+
 
 def fetch(name: str, cache_dir: Path) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +126,10 @@ def main():
     ap.add_argument("--save-completions", action="store_true",
                     help="把每条完整回答原文也写进 json（用于分析 CoT 长度 / 自我纠错标记，"
                          "文件会变大到 ~1.5 MB，compare_results.py 会忽略这个字段）")
+    ap.add_argument("--prompt-variant", default="default",
+                    choices=list(PROMPT_VARIANTS),
+                    help="★ 泛化测试用：换 prompt 模板。default = 训练用的那个；"
+                         "alt = 同义改写（仍要求 \\boxed{}）；minimal = 不给指令")
     args = ap.parse_args()
 
     base_name, adapter = resolve_model(args.model)
@@ -131,7 +145,11 @@ def main():
         print("  只有指纹相同的结果才能直接比较 —— 用 compare_results.py 会自动校验")
     print(f"评测：GSM8K test，{len(rows)} 题，模型 {args.model}")
 
-    raw_prompts = [f"{r['question'].strip()}\n\n{GSM8K_INSTRUCTION}" for r in rows]
+    _mk_prompt = PROMPT_VARIANTS[args.prompt_variant]
+    raw_prompts = [_mk_prompt(r["question"].strip()) for r in rows]
+    print(f"prompt 模板变体: {args.prompt_variant}"
+          f"{'  ← 训练用的就是它' if args.prompt_variant == 'default' else ''}")
+    print(f"  示例结尾: ...{raw_prompts[0][-70:]!r}")
 
     # ★★ 两个引擎（vLLM / transformers）必须用**完全相同**的 prompt。
     #   之前 vLLM 分支把原始 prompt 直接喂进去、没套 chat template，
@@ -251,6 +269,7 @@ def main():
             "task": args.task,
             "split": "test",
             "limit": args.limit,
+            "prompt_variant": args.prompt_variant,
             "subset_fingerprint": fp,
             "num_problems": len(rows),
             "correct": correct,
