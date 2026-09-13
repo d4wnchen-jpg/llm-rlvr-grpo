@@ -147,7 +147,13 @@ def main():
             results = llm.generate(prompts, sp)
             outputs = [r.outputs[0].text for r in results]
         except Exception as e:
-            print(f"vLLM 失败（{type(e).__name__}: {e}），回退 transformers")
+            # ★ 不要静默回退：回退会掩盖 vLLM 真正的报错（我们已经被
+            #   "静默回退/静默出错"坑过好几次：fp32 加载、cache 乱码、指标丢失）
+            import traceback
+            print(f"⚠️ vLLM 失败（{type(e).__name__}: {e}），回退 transformers")
+            print("---- vLLM 完整报错（回退会掩盖真因，所以打出来）----")
+            traceback.print_exc()
+            print("--------------------------------------------------")
             use_vllm = False
 
     if not use_vllm:
