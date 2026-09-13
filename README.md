@@ -110,36 +110,40 @@ GRPOConfig(vllm_enable_sleep_mode=True)
 
 ## 评测协议（★ 数字可比性的前提）
 
-对照实验最容易翻车的不是训练，是**拿不可比的数字做比较**。本项目强制三条：
+对照实验最容易翻车的不是训练，是**拿不可比的数字做比较**。本项目强制这些：
 
 | 规则 | 原因 |
 |---|---|
 | 训练用 train split，评测用 **test split（1319）** | 天然无污染 |
-| 被比较的模型用**同一套解码参数**（贪心 `temperature=0`、`max_new_tokens=512`）| 采样 vs 贪心能差好几个点 |
+| 被比较的模型用**同一套解码参数**（贪心、`max_new_tokens=512`）| 采样 vs 贪心能差好几个点 |
 | 用 `--limit N` 时**两边必须同一个 N** | `--limit N` = `rows[:N]`，子集不同则不可比 |
-| transformers 路径用 `--eval-batch-size`（默认 8）批量左 padding 推理 | 逐条要 30–60 分钟；批量 8 实测**约 30–36 分钟/1319 题**（贪心输出长）；**两边必须同一个值** |
+| **★ 必须显式传 `repetition_penalty`** | HF 的 `generate` 会**静默继承**模型 `generation_config` 里的值（Qwen2.5 是 **1.1**），vLLM 默认 **1.0** → **实测两个引擎差 10 个点**。HF rp=1.1 给 63/100，rp=1.0 给 74/100，vLLM 给 75/100 |
+| **★ 必须显式传 `eos_token_id` / `stop_token_ids`** | Qwen2.5 有**两个** EOS（151645 `<|im_end|>` / 151643 `<|endoftext|>`）：HF 继承两个，vLLM 自推的集合可能不同 → 停止行为不一致（同一类隐式协议风险）|
+| **评测统一用 vLLM**（`VLLM_USE_FLASHINFER_SAMPLER=0`）| **3 分钟/1319 题**（HF 要 30–36 分钟）。换引擎后**所有被比较的模型都要用同一引擎重跑**——实测引擎本身只差 ~1 点，但协议必须一致 |
+
+> **一句话教训**：**凡是要跨实现比较的数值参数，一律显式传。**
+> 框架的"合理默认"在特定组合下就是错，而且**不报错**（本项目踩到 5 个这类坑，见下表）。
 
 `eval_grpo.py` 每次评测会写一个**子集指纹**；`compare_results.py` 校验指纹一致后才出对照表，不一致直接报错退出。
 
 **推荐流程：小样本看方向 → 全量定结论**
 
 ```bash
-# 第 1 轮：300 题，约 25 分钟拿到方向性结论（两边必须同一个 --limit）
-python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --limit 300 --out results/base300.json
-python eval_grpo.py --task gsm8k --model outputs/full --limit 300 --out results/grpo300.json
-python compare_results.py results/base300.json results/grpo300.json
+# 冒烟 100 题（约 1 分钟）
+python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --limit 100 --out /tmp/base100.json
 
-# 第 2 轮：全量 1319 题，定结论（约 30-60 分钟/次）
-python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --out results/base.json
-python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
-python compare_results.py results/base.json results/grpo.json
+# 全量（vLLM 约 3 分钟/次，一次跑完 base + 各 checkpoint）
+for m in "Qwen/Qwen2.5-1.5B-Instruct:base" "outputs/run2:r2"; do
+  python eval_grpo.py --task gsm8k --model "${m%%:*}" --out results/${m##*:}.json
+done
+python compare_results.py results/base.json results/r2.json
 ```
 
 > ⚠️ `check_baseline.py` 报的 81.9% **不能**当基线用：那是 **train split + 温度 0.8 采样**，
 > 目的是「看有没有学习信号」，不是评测结果。
 >
 > 两个模型跑的是**同一批题 → 配对数据**，所以 `compare_results.py` 用 **McNemar 精确检验**
-> 而非独立两比例检验。300 题上 1–2 个点的差异通常**不显著**，别急着写「提升了」。
+> 而非独立两比例检验。1319 题上，**+2.0 点（净翻转 26 题）**是 p<0.05 的线。
 
 ## 防污染设计（可验证）
 
@@ -151,30 +155,49 @@ MBPP : 训练 full − sanitized (547)  |  评测 EvalPlus (MBPP+)
 
 ## 结果
 
-评测协议：GSM8K **test（1319 题，held-out）**，贪心解码，`max_new_tokens=512`，同一批题。
+**评测协议**：GSM8K **test（1319 题，held-out）**，vLLM **贪心**，`max_new_tokens=512`，
+**显式**指定 `repetition_penalty=1.0` 与 `eos_token_id=[151645,151643]`，同一批题（子集指纹校验）。
 
-| 模型 | GSM8K test | Δ | 说明 |
+### 主结果：单卡 11 GPU·h 上 RLVR 有效
+
+| 模型（LoRA r32） | GSM8K test | Δ | McNemar p |
 |---|---|---|---|
-| Qwen2.5-1.5B-Instruct（基座） | **71.9%** (949/1319) | — | 空预测 0/1319，无截断 |
-| **+ GRPO（本项目，150 步 / 弱配置）** | **71.5%** (943/1319) | **−0.5** | McNemar **p=0.61，不显著** |
-| + GRPO（run2：1500 步 / 修好的优化配置） | _进行中_ | | `--lr 5e-6 constant_with_warmup --beta 0.005` |
+| Qwen2.5-1.5B-Instruct（基座） | 966/1319 = **73.2%** | — | — |
+| + GRPO，600 步 | 988/1319 = 74.9% | +1.7 | 0.092 ❌ |
+| + GRPO，1000 步 | 998/1319 = 75.7% | +2.4 | **0.017** ✅ |
+| **+ GRPO，1500 步** | **1016/1319 = 77.0%** | **+3.8** | **0.0003** ✅✅ |
 | + SFT（同规模对照） | _待补_ | | |
 
-**第一个实验是一个干净的 null，而不是"失败"**——我们定位到 4 条机制性原因（详见 `docs/EXPERIMENT_LOG.md`）：
+**曲线单调上升且未饱和** —— 最后 500 步的斜率与最初 600 步相同：
 
-1. **优化太弱**：`lr=1e-6` 是**全参微调**的量级，我们用的却是 LoRA；且 linear 调度把它衰减归零。
-   证据：训练后 `lora_B |max| = 3.96e-05`，**基本停在零初始化**（典型训练后应到 1e-3）
+```
+0 →  600 步： +1.7 点  (0.0028 点/步)
+600 → 1000 步： +0.7 点  (0.0018 点/步)
+1000 → 1500 步：+1.4 点  (0.0028 点/步)   ← 仍在涨，延长有据
+```
+
+> **协议修正的因果（这段比数字重要）**：初版评测**没有显式传 `repetition_penalty`**，
+> HF 的 `generate` 静默继承了 Qwen `generation_config` 里的 **1.1**，把所有数字压低约 10 个点
+> （基座 71.9%→73.2%，1500 步 73.3%→77.0%），**并把 Δ 从 +3.8 压缩成 +1.4**
+> —— RL 模型的 CoT 更长，受重复惩罚伤害更大，所以旧协议**系统性地掩盖了 RL 的效果**。
+> 修正后基座 73.2% 与 [Qwen2.5 论文](https://arxiv.org/abs/2409.12122)的 73.2%（4-shot）吻合。
+
+### 第一个实验（150 步 / 弱配置）是一个干净的 null —— 四条机制诊断
+
+它 Δ=−0.5（p=0.61），但**不是"失败"**，而是一次可解释的负结果：
+
+1. **优化太弱**：`lr=1e-6` 是**全参微调**的量级，我们用的却是 LoRA，且 linear 调度把它衰减归零。
+   证据：训练后 `lora_B |max| = 3.96e-05`，**基本停在零初始化**（改对后是 1.88e-3，**47×**）
 2. **KL 锚太死**：`beta=0.04`，参考实现用 0.001（差 40×）
-3. **信号密度低**：`frac_reward_zero_std ≈ 0.5`——**一半的组零方差、零梯度**。
-   而按 0.72 的独立正确率算，8 条全对只有 7%，实测却有 50% → **per-prompt 正确率是双峰的**（易题恒对、难题恒错）
-4. **有效数据量极小**：数据池 7473，但 150 步 × 2 prompt = 实际只采样 **300 个 prompt（epoch=0.04）**，再打五折 → **~150 个题真的产生了梯度**
+3. **信号密度低**：`frac_reward_zero_std ≈ 0.5` —— **一半的组零方差、零梯度**。
+   按 0.72 的独立正确率算，8 条全对只有 7%，实测却有 50% → **per-prompt 正确率是双峰的**（易题恒对、难题恒错）
+4. **有效数据量极小**：数据池 7473，但 1500 步 × 2 prompt = 只采样 **3000 个 prompt（epoch 0.40）**，
+   再打五折 → **约 750 个题真的产生了梯度**（优化步只有 2 道题，梯度噪声大）
 
 > **已有同模型同数据的公开结果**：[RLVR-vs-SFT-Qwen2.5-1.5b](https://github.com/jayminbhan/RLVR-vs-SFT-Qwen2.5-1.5b)
-> 用 verl + vLLM + 6×4090（**193 GPU·h**）报告 GRPO **+11.9**（69.7→81.6）、SFT **−15.2**。
-> 我们的差异化不在"RLVR 有没有用"，而在 **① 单卡 ~10 GPU·h 的算力前沿 ② 为什么朴素配置一步都不动 ③ 数据难度筛选**。
-
-**成功标准（阶梯式）**：
-① 跑通循环 reward 有变化 → ② 训练集 reward 明显上升 → ③ **held-out 上升（≥ +2.0 点且 p<0.05）** → ④ 同规模 RL > SFT
+> 用 verl + vLLM + 6×4090（**193 GPU·h**）报告 GRPO **+11.9**、SFT **−15.2**。
+> 我们的差异化：**① 单卡 ~11 GPU·h 的算力前沿（每优化步增益与他们接近：0.0025 vs 0.0031 点/步）
+> ② 为什么朴素配置一步都不动（四条机制 + 五个静默坑）③ 数据难度筛选**。
 
 > 进度与完整诊断记录：**[docs/EXPERIMENT_LOG.md](docs/EXPERIMENT_LOG.md)**
 
@@ -256,6 +279,15 @@ python compare_results.py results/base300.json results/grpo300.json
 | 显存靠拍脑袋估 → 反复 OOM | 先跑 `mem_budget.py`（秒级、不上 GPU），按理论值 × 1.5 的标定系数和安全线判定 |
 | **★ rollout 输出乱码（中文语料碎片、永不吐 EOS、全长 512、reward 恒 0）** | **梯度检查点 + `generate` 强用 KV cache**：TRL 用 `model.config.use_cache=False` 躲这个组合，但 HF `generate` 只看 `generation_config.use_cache`（默认 True，TRL 没设）→ 防护失效，KV cache 在 checkpoint 包装层里被写坏。修：**rollout 强制 `model.eval()`**（`train_grpo.py` 默认开启），顺带关掉 rollout 的 LoRA dropout，还快 1.6× |
 | reward 全 0 但看不出原因 | 开 `--log-completions` 让 TRL 直接打出 rollout 原文（配合 `--steps 3`，2 分钟见真相）；`debug_train_rollout.py` 用逐个变量法隔离 |
+| **★ HF `generate` 静默继承模型的 `repetition_penalty`（Qwen2.5 是 1.1）** | 我们只传了 `do_sample/max_new_tokens/pad_token_id`，HF 就拿模型 `generation_config` 里的 1.1 用上了；而 vLLM 默认 1.0 → **两个引擎差 10 个点**，并且**把 RL 的 Δ 从 +3.8 压缩成 +1.4**。修：**显式传** `repetition_penalty=1.0` |
+| **模型的 `eos_token_id` 是列表（Qwen2.5 有两个：151645/151643）** | HF 继承两个，vLLM 自推的集合可能不同 → 停止行为不一致。修：两个引擎都**显式传同一个 stop 集合**（`eval_grpo.py` 会从 `GenerationConfig` 读出并打印）|
+| **LR 配置错档：给 LoRA 用了全参的量级** | `lr=1e-6` 是**全参微调**的量级，LoRA 需要高 10–100 倍；再叠加 linear 调度衰减到 0 → 150 步后 `lora_B |max|` 仍是 3.96e-5（≈零初始化）、**一步都没学到**。改成 `5e-6 + constant_with_warmup` 后涨到 1.88e-3（47×）|
+| **一个优化步只用 2 个 prompt** | `steps_per_generation = grad_accum`，所以 `--grad-accum` 同时放大"生成批"和"每步用几道题"；**而微批（显存大头）不变**。想提高梯度质量走 `--grad-accum`，不要走 `--batch-size` |
+| `kl` 指标不可用来判断策略有没有动 | 从 step 1 到 150 都稳定在 2–3e-4、对 lr 完全不敏感（疑为 policy/ref 前向精度不一致造成的噪声底）。**改用 `lora_B` 范数**（从 checkpoint 文件直接读，CPU 1 秒）|
+| **vLLM 装最新版 → 拉来 CUDA 13 全套，与镜像的 CUDA 12.4 toolkit 冲突** | flashinfer 用系统 `nvcc` JIT 编译时 `--compress-mode=size` 不被支持 → `Engine core initialization failed`。修：`VLLM_USE_FLASHINFER_SAMPLER=0`。**更根本的做法：用官方 vLLM 镜像，或装匹配 cu124 的版本**（`pip install --dry-run` 先看它要动什么）|
+| vLLM 在 `gpu_memory_utilization=0.85` 时启动失败 | 预算差 0.2 GiB（1%）它就**直接报错**而不是自动收缩 KV cache。修：降到 0.75（评测用不到那么多 KV）|
+| vLLM 报 `FileNotFoundError: 'ninja'` | pip 装了 `ninja` 包，但**我们用绝对路径调用 venv 的 python、没 activate，所以 `<venv>/bin` 不在 PATH**。修：`ln -sf /root/venv-vllm/bin/ninja /usr/local/bin/ninja` |
+| `except` 里回退会掩盖真因 | vLLM 失败时静默回退到 transformers，把真正的报错吞掉（我们因此多花了两轮）。修：**失败时打印完整 traceback** |
 
 ## License
 
