@@ -107,6 +107,11 @@ def main():
                     help="transformers 路径的批大小（★ 被比较的模型必须用同一个值）")
     ap.add_argument("--cache-dir", default="data/raw")
     ap.add_argument("--no-vllm", action="store_true")
+    ap.add_argument("--eos-token-ids", default=None,
+                    help="★ 显式指定结束符（逗号分隔）。不传则从模型的 generation_config "
+                         "读取并**打印出来**。Qwen2.5 有两个 EOS（151645 <|im_end|> / "
+                         "151643 <|endoftext|>），HF 会继承两个，而 vLLM 自己推的集合可能不同 "
+                         "—— 不给 vLLM 传 stop_token_ids 属于同一类隐式协议风险")
     ap.add_argument("--out", default=None, help="结果 json 路径")
     args = ap.parse_args()
 
@@ -131,11 +136,22 @@ def main():
     #   （实测参考项目：无 chat template 0-shot 45.5% vs 带模板 69.8%）。
     #   那会让"引擎一致性验证"看起来差 20 多个点，而根因是 prompt 格式。
     from transformers import AutoTokenizer
+    from transformers import GenerationConfig
     load_name = base_name or args.model
     tok = AutoTokenizer.from_pretrained(load_name)
     prompts = [tok.apply_chat_template([{"role": "user", "content": p}],
                                        tokenize=False, add_generation_prompt=True)
                for p in raw_prompts]
+
+    # ★ 显式确定结束符集合：两个引擎必须一致
+    if args.eos_token_ids:
+        eos_ids = [int(x) for x in str(args.eos_token_ids).split(",")]
+    else:
+        _gc = GenerationConfig.from_pretrained(load_name)
+        eos_ids = _gc.eos_token_id
+        if isinstance(eos_ids, int):
+            eos_ids = [eos_ids]
+    print(f"结束符（显式传给两个引擎）: {eos_ids}")
 
     # ---------- 生成 ----------
     outputs = []
@@ -151,7 +167,8 @@ def main():
                       gpu_memory_utilization=args.vllm_gpu_mem, dtype="bfloat16")
             sp = SamplingParams(temperature=args.temperature,
                                 max_tokens=args.max_new_tokens,
-                                repetition_penalty=args.repetition_penalty)
+                                repetition_penalty=args.repetition_penalty,
+                                stop_token_ids=eos_ids)
             results = llm.generate(prompts, sp)
             outputs = [r.outputs[0].text for r in results]
         except Exception as e:
@@ -188,7 +205,8 @@ def main():
             with torch.no_grad():
                 gen = model.generate(**enc, max_new_tokens=args.max_new_tokens,
                                      do_sample=False, pad_token_id=pad_id,
-                                     repetition_penalty=args.repetition_penalty)
+                                     repetition_penalty=args.repetition_penalty,
+                                     eos_token_id=eos_ids)
             plen = enc["input_ids"].shape[1]
             for seq in gen:
                 outputs.append(tok.decode(seq[plen:], skip_special_tokens=True))
