@@ -11,9 +11,15 @@
 
 ★ 默认在 CPU 上合并，这样可以在评测/训练正在占 GPU 时并行跑，不抢显存。
 
+★★ 必须用 **base 环境**跑，不能用 venv-vllm：
+    /root/venv-vllm 是给 vLLM 推理搭的，**没有装 peft**，会在 `from peft import PeftModel`
+    处崩掉；更坑的是崩了之后不会生成输出目录，后续 eval 拿到不存在的路径，
+    报的是 **"Repo id must be in the form 'repo_name'..."** —— 一个完全误导人的错误。
+
 用法:
-    # 合并一个 checkpoint
-    python merge_adapter.py --adapter outputs/run2/checkpoint-1500 --out /tmp/merged_1500
+    # 合并一个 checkpoint（注意解释器！）
+    /root/miniconda3/bin/python3 merge_adapter.py \
+        --adapter outputs/run2/checkpoint-1500 --out /root/autodl-tmp/merged1500
 
     # 合并完直接看大小
     du -sh /tmp/merged_1500
@@ -56,7 +62,15 @@ def main():
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from peft import PeftModel
+    try:
+        from peft import PeftModel
+    except ModuleNotFoundError as e:
+        raise SystemExit(
+            "❌ 这个环境没装 peft。★ 本脚本必须用 **base 环境**跑：\n"
+            "     /root/miniconda3/bin/python3 merge_adapter.py ...\n"
+            "   不能用 /root/venv-vllm —— 那是给 vLLM 推理搭的，没有 peft。\n"
+            f"   原始错误: {e}"
+        )
 
     adapter_path = Path(args.adapter)
     out_path = Path(args.out)
