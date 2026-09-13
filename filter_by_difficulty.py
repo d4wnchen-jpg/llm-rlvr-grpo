@@ -156,6 +156,12 @@ def main():
     mid = sum(1 for r in rated if args.keep_min <= r["k"] <= keep_max)
     print(f"  筛后保留（{args.keep_min}<=k<={keep_max}）：{mid}/{total} = {mid/total:.1%}")
 
+    # ★ 一行机器可读汇总：多次运行（train/test、base/RL）用 grep '^SUMMARY' 直接对齐比较。
+    kG, k0 = hist.get(args.num_samples, 0), hist.get(0, 0)
+    print(f"\nSUMMARY model={args.model} data={args.data} n={total} G={args.num_samples} "
+          f"p_mean={p_hat:.4f} pass_at_G={(1 - k0 / total):.4f} "
+          f"degenerate={deg / total:.4f} allcorrect={kG} allwrong={k0} kept={mid}")
+
     # 写筛后数据集
     fp = Path(args.out_filtered)
     with fp.open("w", encoding="utf-8") as f:
