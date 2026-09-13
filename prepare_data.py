@@ -106,6 +106,41 @@ def extract_signature(ref_code: str):
     return m.group(1).strip() if m else None
 
 
+def build_gsm8k_test(raw_dir: Path, out_path: Path, limit=None):
+    """评测集 GSM8K test 的**同格式**副本，给 filter_by_difficulty.py 当 --data 用。
+
+    与 train 的关键差别：**不打乱顺序** —— eval_grpo.py 的 load_gsm8k_test 按
+    test.jsonl 的原始顺序读，两边顺序一致，才能按 index 对齐做配对分析
+    （打乱了就对不上号，配对检验全废）。
+
+    ★ 原子写：先写 .tmp 再 os.replace。这个文件马上要被 50 分钟的评分任务读，
+      中途崩溃留下半截文件（题数对不上）代价很大；'w' 是 open 时就截断的。
+    """
+    path = fetch("test.jsonl", SOURCES["gsm8k"]["base"], raw_dir)
+    rows = [json.loads(l) for l in path.open(encoding="utf-8") if l.strip()]
+    if limit:
+        rows = rows[:limit]
+
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    n, skipped = 0, 0
+    with tmp.open("w", encoding="utf-8") as f:
+        for r in rows:
+            ans = r.get("answer", "")
+            if "####" not in ans:
+                skipped += 1
+                continue
+            f.write(json.dumps({
+                "prompt": [{"role": "user",
+                            "content": f"{r['question'].strip()}\n\n{GSM8K_INSTRUCTION}"}],
+                "answer": ans.split("####")[-1].strip(),
+                "question": r["question"],
+            }, ensure_ascii=False) + "\n")
+            n += 1
+    tmp.replace(out_path)       # 原子替换：要么是旧的完整文件，要么是新的
+    print(f"  ✓ GSM8K test: {n} 条（跳过 {skipped}）")
+    return n
+
+
 def build_mbpp(raw_dir: Path, out_path: Path, limit=None, seed=42):
     full_p = fetch("mbpp.jsonl", SOURCES["code"]["base"], raw_dir)
     san_p = fetch("sanitized-mbpp.json", SOURCES["code"]["base"], raw_dir)
@@ -155,24 +190,33 @@ def build_mbpp(raw_dir: Path, out_path: Path, limit=None, seed=42):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="gsm8k", choices=["gsm8k", "code"])
-    ap.add_argument("--out", default=None, help="默认 data/<task>_train.jsonl")
+    ap.add_argument("--split", default="train", choices=["train", "test"],
+                    help="★ test（仅 gsm8k）：产出与 eval_grpo 顺序一致的评测集副本，"
+                         "供 filter_by_difficulty.py 当 --data 用。不打乱、不 shuffle")
+    ap.add_argument("--out", default=None, help="默认 data/<task>_<split>.jsonl")
     ap.add_argument("--raw-dir", default="data/raw")
     ap.add_argument("--limit", type=int, default=None, help="只取 N 题（pilot）")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
     if args.out is None:
-        args.out = {"gsm8k": "data/gsm8k_train.jsonl",
-                    "code": "data/mbpp_train.jsonl"}[args.task]
+        args.out = {("gsm8k", "train"): "data/gsm8k_train.jsonl",
+                    ("gsm8k", "test"): "data/gsm8k_test.jsonl",
+                    ("code", "train"): "data/mbpp_train.jsonl"}[(args.task, args.split)]
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     raw_dir = Path(args.raw_dir)
 
-    print(f"准备数据：task={args.task}")
+    print(f"准备数据：task={args.task} split={args.split}")
     if args.task == "gsm8k":
-        build_gsm8k(raw_dir, out_path, args.limit, args.seed)
+        if args.split == "test":
+            build_gsm8k_test(raw_dir, out_path, args.limit)
+        else:
+            build_gsm8k(raw_dir, out_path, args.limit, args.seed)
     else:
+        if args.split == "test":
+            raise SystemExit("✗ code 任务还没有 test 分支")
         build_mbpp(raw_dir, out_path, args.limit, args.seed)
 
     # 展示一条
