@@ -96,6 +96,9 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.0, help="评测用贪心")
     ap.add_argument("--batch-size", type=int, default=64, help="vLLM 批大小")
+    ap.add_argument("--vllm-gpu-mem", type=float, default=0.75,
+                    help="vLLM 显存占比。0.85 会在新版 vLLM 上因 KV cache 略微超出"
+                         "预算（实测超 0.2 GiB）而**直接启动失败**，不是自动收缩")
     ap.add_argument("--eval-batch-size", type=int, default=8,
                     help="transformers 路径的批大小（★ 被比较的模型必须用同一个值）")
     ap.add_argument("--cache-dir", default="data/raw")
@@ -139,9 +142,9 @@ def main():
     if use_vllm:
         try:
             from vllm import LLM, SamplingParams
-            print(f"用 vLLM 推理（同一个 chat template，贪心）...")
+            print(f"用 vLLM 推理（同一个 chat template，贪心，gpu_mem={args.vllm_gpu_mem}）...")
             llm = LLM(model=args.model, max_model_len=2048,
-                      gpu_memory_utilization=0.85, dtype="bfloat16")
+                      gpu_memory_utilization=args.vllm_gpu_mem, dtype="bfloat16")
             sp = SamplingParams(temperature=args.temperature,
                                 max_tokens=args.max_new_tokens)
             results = llm.generate(prompts, sp)
