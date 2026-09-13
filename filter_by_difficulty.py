@@ -5,9 +5,15 @@
   GRPO 的梯度只来自**组内 reward 有方差**的题。我们实测 frac_reward_zero_std ≈ 0.5，
   也就是**约一半的组是退化的**（8 条全对 或 8 条全错）→ 那些步零梯度。
 
-  而且按"每题独立正确率 = 0.72"去算，8 条全对的概率只有 7%，实测却是 50%
-  → 说明 per-prompt 正确率不是 0.72，而是**双峰分布**（易题恒对、难题恒错）。
+  而且按"每题独立正确率 = 0.72"去算，8 条全对概率只有 7%，实测退化却有 58%
+  → 说明 per-prompt 正确率不是单一值，而是**双峰分布**（易题恒对、难题恒错）。
   ★ 这个脚本就是去**定量验证**这个假设，同时产出筛后的训练集。
+
+  【实测结果（train 前 2000 题 × G=8，2026-09-14）】
+    平均单条通过率 p = 0.821（注意：不是贪心评测的 0.732，T=0.8 采样本就不同）
+    退化 57.9% = 1158/2000，i.i.d.(p) 零假设只有 20.7% → **2.8×**
+    但退化里 **全对 k=8 占 1093 题（94.4%）**，全错 k=0 只有 65 题（5.6%）
+    → "双峰"成立，但重心几乎全在"题太简单"一侧；pass@8 = 96.8%
 
   筛题的成本几乎完全由推理速度决定 —— 所以必须用 vLLM（HF generate 要十几个小时）。
 
@@ -138,7 +144,15 @@ def main():
     deg = sum(1 for r in rated if r["degenerate"])
     print("-" * 66)
     print(f"  退化题（k=0 或 k={args.num_samples}）：{deg}/{total} = {deg/total:.1%}")
-    print(f"  ★ 如果是 i.i.d. 且 p=0.72，全对概率应只有 {0.72**args.num_samples:.1%}")
+    # ★ 零假设必须用**实测平均通过率**，不能用评测的贪心通过率（0.72）：
+    #   这里是 T=0.8 采样，通过率本来就与贪心不同 —— 拿贪心基线比会得出错的倍数。
+    p_hat = sum(r["k"] for r in rated) / (total * args.num_samples) if total else 0.0
+    null_deg = (1 - p_hat) ** args.num_samples + p_hat ** args.num_samples
+    print(f"  ★ i.i.d. 零假设（二项，p = 实测均值 {p_hat:.3f}）："
+          f"退化概率应只有 {null_deg:.1%}")
+    print(f"    实测是它的 {deg/total/null_deg:.1f}× → 越高越说明 per-prompt 通过率是双峰，"
+          f"而非单一 p（附：全对 {hist.get(args.num_samples,0)} 题 / 全错 {hist.get(0,0)} 题）"
+          if null_deg > 0 else "")
     mid = sum(1 for r in rated if args.keep_min <= r["k"] <= keep_max)
     print(f"  筛后保留（{args.keep_min}<=k<={keep_max}）：{mid}/{total} = {mid/total:.1%}")
 
