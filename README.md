@@ -157,52 +157,119 @@ MBPP : 训练 full − sanitized (547)  |  评测 EvalPlus (MBPP+)
 
 **评测协议**：GSM8K **test（1319 题，held-out）**，vLLM，`max_new_tokens=512`，
 **显式**指定 `repetition_penalty=1.0` 与 `eos_token_id=[151645,151643]`，同一批题（子集指纹校验）。
-下面默认是**贪心**口径；另有**采样**口径（`--temperature 0.8 --top-p 0.95`，与训练 rollout 一致）
-的对照，见「关键限定」一节 —— 两种口径都测了，结论一致。
+默认**贪心**；另有**采样**口径（`--temperature 0.8 --top-p 0.95`，与训练 rollout 一致）的对照。
+**两种口径的结论不同**，见下。
 
-### 主结果（贪心口径）：单卡 11 GPU·h 上 RLVR 有效
+### 主结果（贪心口径）：单卡 ~11 GPU·h 上 RLVR 有效，跨 3 个种子稳定
 
-| 模型（LoRA r32） | GSM8K test | Δ | McNemar p |
+| 模型（LoRA r32，1500 步）| GSM8K test | Δ | 95% CI | McNemar p |
+|---|---|---|---|---|
+| Qwen2.5-1.5B-Instruct（基座） | 966/1319 = **73.2%** | — | — | — |
+| + GRPO · seed 42 | 1012/1319 = 76.7% | +3.49 | [+1.52, +5.53] | 0.0009 |
+| + GRPO · seed 1234 | 1018/1319 = 77.2% | +3.94 | [+1.90, +5.99] | 0.0003 |
+| + GRPO · seed 5678 | 1028/1319 = 77.9% | +4.70 | [+2.73, +6.75] | 0.0000 |
+
+**Δ = +4.04 ± 0.61（SD, n=3）** —— 三个种子单独都显著，极差仅 1.2 点。
+
+单次训练 **11 h 08 min**（26.7 s/it）≈ 11 GPU·h ≈ **¥22**。曲线（seed 42，贪心）：
+
+| 步数 | 600 | 1000 | 1500 |
 |---|---|---|---|
-| Qwen2.5-1.5B-Instruct（基座） | 966/1319 = **73.2%** | — | — |
-| + GRPO，600 步 | 988/1319 = 74.9% | +1.7 | 0.092 ❌ |
-| + GRPO，1000 步 | 998/1319 = 75.7% | +2.4 | **0.017** ✅ |
-| **+ GRPO，1500 步** | **1016/1319 = 77.0%** | **+3.8** | **0.0003** ✅✅ |
-| + SFT（同规模对照） | _待补_ | | |
+| 准确率 | 74.9% | 75.7% | **77.0%** |
+| Δ（p）| +1.7（0.092 ❌）| +2.4（0.017 ✅）| **+3.8（0.0003 ✅✅）** |
 
-**曲线单调上升且未饱和** —— 最后 500 步的斜率与最初 600 步相同：
+### ★★ 关键限定：训练**只锐化众数，不改善分布**
+
+训练 rollout 用的是 T=0.8 / top_p=0.95 **采样**，而默认评测用贪心。两套口径都测（G=8，1319 题）：
+
+| 步数 | 贪心 Δ | 采样 Δ | 采样 95% CI |
+|---|---|---|---|
+| 600 | +1.67（p=0.092 ❌）| +1.38 | — |
+| 1000 | +2.43（p=0.017 ✅）| +2.19 | [+1.30, +3.09] ✅ |
+| **1500** | **+3.79**（p=0.0009）| +1.78 | [+0.87, +2.70] ✅ |
+
+**贪心口径一路上升；采样口径从 600 步起就基本饱和** —— 三点都在 +1.4 ~ +2.2 之间，
+两两差异不显著（1000 → 1500：Δ = −0.41，95% CI [−1.20, +0.39] **跨 0**）。
+
+> ⚠️ **交互检验**（贪心Δ − 采样Δ）= +1.71，95% CI **[−0.43, +3.88] 跨 0**。
+> 所以**不能说"增益依赖解码口径"** —— 同一模型上"一个口径显著、另一个不显著"
+> 推不出交互，这是「显著 vs 不显著，本身未必显著」那个陷阱。
+
+#### 能力边界完全没动：pass@k 的 Δ 单调衰减到 0
+
+用同一批 k/8 数据算无偏 pass@k：
+
+| k | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| 基座 | 72.01% | 81.99% | 86.19% | 88.60% | 90.16% | 91.27% | 92.12% | **92.80%** |
+| +GRPO | 73.79% | 83.16% | 86.91% | 88.97% | 90.34% | 91.34% | 92.12% | **92.72%** |
+| **Δ** | **+1.78** | +1.17 | +0.72 | +0.38 | +0.18 | +0.07 | **+0.00** | **−0.08** |
+
+按题统计 k 的转移：
 
 ```
-0 →  600 步： +1.7 点  (0.0028 点/步)
-600 → 1000 步： +0.7 点  (0.0018 点/步)
-1000 → 1500 步：+1.4 点  (0.0028 点/步)   ← 仍在涨，延长有据
+k=0  → k>0      学会新题（扩大边界）     33 题
+k>0  → k=0      变成完全不会             34 题    → 边界净 −1，等于没动
+1≤k<8 → k=8     边缘题变稳定            143 题
+k=8  → k<8      从稳定退化              100 题    → 稳定集净 +43
 ```
 
-### ★★ 关键限定：两种解码口径下增益都成立，但采样口径下**约减半**
+**RL 把 143 道题推成「稳定会做」，同时把 100 道踢下去；但「从不会到会」净增 −1 道。**
 
-项目的评测默认用贪心，而**训练 rollout 用的是 T=0.8 / top_p=0.95 采样**。
-两套口径都测了 —— 同一合并模型、同一套 vLLM 管线（2026-09-14）：
+#### 增益高度集中在中间层，两端（训练时的零梯度层）几乎不动
 
-| 解码口径 | 基座 | +GRPO 1500 | Δ | 95% CI | 显著? |
+| 按基座 k/8 分层 | 题数 | 基座 | +GRPO | Δ | 对净增益的贡献 |
 |---|---|---|---|---|---|
-| **贪心** | 966（73.2%）| **1012（76.7%）** | **+3.49** | — | ✅ p=0.0009 |
-| **采样 T=0.8 / top_p=0.95（G=8）** | 0.7201 | 0.7379 | **+1.78** | **[+0.87, +2.70]** | ✅ |
-| **交互**（贪心Δ − 采样Δ）| | | +1.71 | **[−0.43, +3.88]** | ❌ |
+| k=0（完全不会）| 95 | 6.3% | 7.4% | +1.1 | 1 题 |
+| k=1-2（很难）| 132 | 20.5% | 24.2% | +3.8 | 5 题 |
+| **k=3-5（中等）** | **236** | 53.4% | 64.4% | **+11.0** | **26 题（57%）** |
+| k=6-7（接近会）| 289 | 86.5% | 90.3% | +3.8 | 11 题 |
+| k=8（稳定会）| 567 | 98.2% | 98.8% | +0.5 | 3 题 |
 
-**结论（三句话）**
+**18% 的题（k=3-5）贡献了 57% 的增益**；而 k=0 和 k=8 正是训练时组内无方差、**零梯度**的两层。
 
-1. **两种口径下增益都显著** —— 主结果不依赖"贪心"这个选择。
-2. 采样口径下的增益**看起来只有一半**（+1.8 vs +3.5）。
-3. 但**交互不显著**（CI 跨 0）→ **不能说"增益依赖解码口径"**。
-   在同一模型上"这个口径显著、那个口径不显著"本身推不出交互 ——
-   这正是「显著 vs 不显著，本身未必显著」那个陷阱。
+#### 约 43% 的净增益是「指令依赖」的
 
-#### 📌 这个结论是被数据纠正两次之后才站住的（教训本身有价值）
+- default 下净增益 **+46 题**，但「三种模板（default/alt/minimal）都答对」只净增 **+26 题**
+  → **只有 57% 的增益在去掉指令后仍成立**
+- 而且新修好的题**比原有会做的题更脆弱**：原有会做的题 84.7% 在三个模板下都稳，新修的只有 61%
 
-| 阶段 | 采样口径的测法 | Δ | 当时的结论 |
-|---|---|---|---|
-| 第一版 | 单条生成/题（G=1）| +0.53（p=0.69）| ❌ "增益消失了" |
-| **最终版** | **8 条/题（G=8）** | **+1.78（CI 不含 0）** | ✅ "减半，但仍显著" |
+#### 三个种子的错误高度相关
+
+```
+被 3 个种子共同修好   55 题         被 3 个种子共同弄坏  15 题
+被 1 个种子单独修好  100 题
+三种子多数投票 77.18%  vs  单种子均值 77.28%    →  −0.10 点
+```
+
+**集成一点提升都没有** → 失败是系统性的，不是随机噪声。
+
+### 🎯 机制：训练在锐化众数，同时把梯度信号耗尽
+
+```
+训练把中间层（k=3-5）的题推向 k=8
+   ↓   143 题升到全对 / 100 题掉下来，净 +43
+更多组变成「全对」→ 组内零方差 → 梯度枯竭
+   ↓   退化率实测：前 200 步 0.578 / 0.588  →  后 200 步 0.623 / 0.655  ↑
+采样口径的增益在 600 步后饱和（+1.4 ~ +2.2）
+   ↓
+贪心口径继续上升（+1.67 → +3.79）→ 纯锐化
+   ↓
+能力边界始终不动（pass@k 的 Δ 单调衰减到 0；「从不会到会」净 −1）
+```
+
+> **退化率上升不是 bug，是机制的签名**：训练把题变成「稳定会做」，组内就没方差了，
+> 梯度自然变少。两个种子的日志一致（0.578→0.623、0.588→0.655），
+> 且**前 200 步的 0.578/0.588 与基座独立实测的 0.579 吻合**（交叉验证）。
+
+#### 📌 这套结论是被数据纠正四次之后才站住的
+
+| 原结论 | 打回它的证据 | 修正后 |
+|---|---|---|
+| "增益消失了"（采样口径 +0.53）| 单条/题噪声太大；G=8 测出 +1.78（CI 不含 0）| "减半，但仍显著" |
+| "增益是贪心专属" | 交互 CI [−0.43, +3.88] 跨 0 | 收回，不能这么说 |
+| "训练越久越好，曲线未饱和" | 采样口径 600 步后饱和；退化率反而上升 | "只锐化众数，不改善分布" |
+| "采样在 1000 步见顶后回落" | 1000→1500 的 Δ CI [−1.20, +0.39] 跨 0 | "从 600 步起就饱和" |
 
 **一个 ~2 点的效应，用 1 条/题去测会得出相反的结论。** 这和发现 A 是同一个道理：
 **测量口径指定不足（这里是样本数，那里是解码参数）足以翻转结论。**
@@ -382,15 +449,31 @@ python train_grpo.py --task gsm8k --use-lora \
     --steps 10 --num-generations 4 --batch-size 4 \
     --max-completion-length 256 --out outputs/pilot
 
-# 6. 正式训练（batch 8 + grad_accum 2 = 有效 batch 16，峰值按 8 条算）
+# 6. 正式训练（复核：[`run_seeds.sh`](run_seeds.sh) 用同一套配置跑多个种子）
 python train_grpo.py --task gsm8k --use-lora --no-vllm \
-    --steps 150 --num-generations 8 --batch-size 8 --grad-accum 2 \
-    --max-completion-length 512 --save-steps 50 --out outputs/full
+    --steps 1500 --num-generations 8 --batch-size 8 --grad-accum 2 \
+    --max-completion-length 512 --lr 5e-6 \
+    --lr-scheduler-type constant_with_warmup --warmup-ratio 0.03 \
+    --beta 0.005 --seed 42 --save-steps 50 --out outputs/run2
 
-# 7. 评测（held-out）：先用 --limit 300 看方向，再全量定结论
-python eval_grpo.py --task gsm8k --model outputs/full --limit 300 --out results/grpo300.json
-python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --limit 300 --out results/base300.json
-python compare_results.py results/base300.json results/grpo300.json
+# 7. 合并 adapter（vLLM 不直接吃 LoRA）★ 必须用 base 环境，venv-vllm 没装 peft
+/root/miniconda3/bin/python3 merge_adapter.py \
+    --adapter outputs/run2/checkpoint-1500 --out /root/autodl-tmp/merged1500
+
+# 8. 评测（held-out，全量 1319 题）
+VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python eval_grpo.py \
+    --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --out results/base_vllm.json
+VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python eval_grpo.py \
+    --task gsm8k --model /root/autodl-tmp/merged1500 --out results/rl_greedy.json
+python3 compare_results.py results/base_vllm.json results/rl_greedy.json
+
+# 9. 训练分布口径（论文里那条关键对照）：每题采 8 条
+VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python filter_by_difficulty.py \
+    --model /root/autodl-tmp/merged1500 --data data/gsm8k_test.jsonl \
+    --out data/test_rated_rl.jsonl --out-filtered /tmp/x.jsonl   # data/gsm8k_test.jsonl 由 prepare_data.py --split test 生成
+
+# 10. 一次跑完全部零成本分析
+python3 analyze_results.py
 ```
 
 ## 文件说明
@@ -401,10 +484,17 @@ python compare_results.py results/base300.json results/grpo300.json
 | `prepare_data.py` | 数据准备（`--task gsm8k\|code`），含防污染排除 |
 | `check_baseline.py` | **训练前必做**：测通过率 + ★组内学习信号 |
 | `mem_budget.py` | **开跑前必做**：秒级估算显存峰值、判定能否放下、给安全 batch 建议 |
-| `train_grpo.py` | GRPO 训练（TRL，可选 vLLM colocate + sleep mode）｜启动即打印版本/精度/显存预算 |
-| `eval_grpo.py` | 评测 held-out（支持 LoRA adapter 目录；vLLM 推理，自动回退 transformers）|
+| `train_grpo.py` | GRPO 训练（TRL，可选 vLLM colocate + sleep mode）｜启动即打印版本/精度/显存预算/`seed` |
+| `eval_grpo.py` | 评测 held-out（vLLM 推理，显式传 rp/top_p/eos，写子集指纹）|
+| `filter_by_difficulty.py` | 给每题采 G 条统计通过率 k/G → 评分 jsonl + 筛后数据集 + 一行 `SUMMARY` |
+| `analyze_paired.py` | **配对 Δ 的 bootstrap 置信区间 + 交互检验**（支持 eval json 与评分 jsonl）|
+| `analyze_results.py` | **一条命令跑完 6 个零成本分析**（pass@k / 难度分层 / 模板鲁棒性 / 种子一致性 / 2×3 矩阵 / 退化率趋势）|
 | `compare_results.py` | 对照表 + **子集指纹校验** + **McNemar 配对显著性检验** |
-| `docs/EXPERIMENT_LOG.md` | **实验日志**：环境事实、已完成的数字、机制诊断、run2 配置与监控命令 |
+| `merge_adapter.py` | LoRA adapter → 完整模型（供 vLLM 加载）｜**必须用 base 环境跑** |
+| `run_seeds.sh` / `eval_seeds.sh` | 多个种子批量训练 / 批量合并+评测+分析（可重入）|
+| `docs/EXPERIMENT_LOG.md` | **实验日志**：环境事实、全部数字、机制诊断、被推翻的假设 |
+
+> `results/*.json`、`outputs/`、`data/` 不入库（见 `.gitignore`），按上面「快速开始」重跑即可生成。
 
 ## 环境与预算
 
@@ -412,11 +502,17 @@ python compare_results.py results/base300.json results/grpo300.json
 |---|---|
 | GPU | RTX 4090 24G × 1 |
 | 依赖 | torch 2.5.1+cu124（镜像）、**transformers 4.57.6**、**trl 0.19.1**、datasets、peft |
-| 显存 | 1.5B + LoRA r32 + 梯度检查点，batch8×grad_accum2：**预算峰值 11.6 GiB** |
-| 预算 | 约 ¥32-53（16-27 卡时 × ¥2/h）|
+| 显存 | 1.5B + LoRA r32 + 梯度检查点，batch8×grad_accum2：预算峰值 13.4 GiB，**实测 15.8 GiB**（nvidia-smi，占卡 66%）|
+| 预算 | 约 **¥150**（75 卡时 × ¥2/h）：3 个种子训练 33 h + 难度筛选 ~3 h + 评测若干 |
 
-> vLLM 本机暂未启用：vLLM 0.8.x 要求 torch ≥ 2.6，与镜像的 2.5.1 冲突。
-> 上 vLLM 需先升 torch，收益是 rollout 大幅加速（当前 `--no-vllm` 用 HF generate）。
+> **显存估算的膨胀系数**：`mem_budget.py` 的理论值要乘 **1.77** 才接近 nvidia-smi 实际占用
+> （理论 8.96 → 实测 15.83 GiB，差额是 PyTorch 缓存分配器的预留与碎片）。
+> 脚本内 `SAFETY=1.5` 偏乐观，按 `--no-lora` 估全参时要更保守：1.5B 全参理论 25.8 GiB，
+> **4090 上放不下**（8-bit AdamW 17.2 GiB 可勉强，ZeRO-2 CPU offload 11.4 GiB 稳妥）。
+
+> **训练用 HF `generate` 做 rollout，评测用 vLLM**（`/root/venv-vllm`，vllm 0.29，独立环境）。
+> 训练没上 vLLM 的原因：GPU 利用率实测只有 **22%**（瓶颈在 HF 解码循环而非算力），
+> 理论上 vLLM 能提速，但会**改变采样分布**，与现有全部结果不可比，所以只用于评测。
 
 ## 踩过的坑（工程记录）
 
