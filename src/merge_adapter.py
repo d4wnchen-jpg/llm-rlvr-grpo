@@ -114,7 +114,7 @@ def main():
         raise SystemExit("❌ 异常：输出里出现了 adapter_config.json，说明没有真正合并")
     print(f"\n下一步（vLLM 跑评测，约 3 分钟）：")
     print(f"  source /root/venv-vllm/bin/activate")
-    print(f"  python eval_grpo.py --task gsm8k --model {out_path} --out results/xxx.json")
+    print(f"  python3 src/eval_grpo.py --task gsm8k --model {out_path} --out results/xxx.json")
 
 
 if __name__ == "__main__":

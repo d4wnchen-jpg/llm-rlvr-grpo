@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))   # tools/ 下的脚本要能 import src/ 里的 reward
 from reward import compute_gsm8k_reward, extract_gsm8k_answer  # noqa: E402
 
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj",

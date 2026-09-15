@@ -2,9 +2,9 @@
 """评测：在 held-out 测试集上算准确率（自包含，不依赖其他项目）。
 
 用法:
-    python eval_grpo.py --task gsm8k --model outputs/full --limit 50   # 先小样本冒烟
-    python eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
-    python eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct   # 测基座
+    python3 src/eval_grpo.py --task gsm8k --model outputs/full --limit 50   # 先小样本冒烟
+    python3 src/eval_grpo.py --task gsm8k --model outputs/full --out results/grpo.json
+    python3 src/eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct   # 测基座
 
 用 vLLM 离线推理（快）；没装 vLLM 自动回退 transformers。
 

@@ -129,7 +129,7 @@
 
 **一个 ~2 点的效应，用 1 条/题去测会得出相反的结论。**
 这是发现 A 的同一道理，只是这次的"口径"是**样本数**而不是解码参数。
-→ **任何 Δ 都必须带置信区间**；`analyze_paired.py` 就是为此写的。
+→ **任何 Δ 都必须带置信区间**；`tools/analyze_paired.py` 就是为此写的。
 
 **顺带这条测量自证了评分管线无偏**：base 在 test 上 G=8 的 `p_mean = 0.7201`，
 单条采样评测 `951/1319 = 0.7211` —— 两套独立测量差 **0.1 个点**。
@@ -256,7 +256,7 @@ seed 5678：前 200 步 0.588 → 后 200 步 0.655
 - ❌「曲线未饱和，延长有据」→ 采样口径 600 步后饱和；退化率反而上升
 - ❌「采样在 1000 步见顶后回落」→ 1000→1500 的 Δ CI [−1.20, +0.39] 跨 0
 - ❌「退化率会随训练下降」→ 实测**上升**（0.578→0.623 / 0.588→0.655）
-- ❌「全参微调放得下」→ `mem_budget.py` 把全参优化器状态算成 0，修后 1.5B 全参理论 25.8 GiB，4090 放不下
+- ❌「全参微调放得下」→ `src/mem_budget.py` 把全参优化器状态算成 0，修后 1.5B 全参理论 25.8 GiB，4090 放不下
 
 
 ---
@@ -267,7 +267,7 @@ seed 5678：前 200 步 0.588 → 后 200 步 0.655
 |---|---|
 | **显式传 `repetition_penalty`** | HF 的 `generate` **静默继承**模型 `generation_config` 里的值（Qwen2.5 = **1.1**），vLLM 默认 **1.0** → **实测差 10 个点**。HF rp=1.1 给 63/100，rp=1.0 给 74/100，vLLM 给 75/100 |
 | **显式传 `eos_token_id` / `stop_token_ids`** | Qwen2.5 有**两个** EOS（151645 `<|im_end|>`、151643 `<|endoftext|>`）；HF 继承两个，vLLM 自推的可能不同 |
-| **同一批题 + 同一 `--limit`** | `--limit N` = `rows[:N]`；`compare_results.py` 用子集指纹强制校验 |
+| **同一批题 + 同一 `--limit`** | `--limit N` = `rows[:N]`；`src/compare_results.py` 用子集指纹强制校验 |
 | **同一引擎** | 引擎本身只差 ~1 点，但**换引擎后所有被比较的模型都要重跑** |
 | 训练 train split / 评测 test split | 天然无污染 |
 | 配对检验 | 同一批题 → 用 **McNemar 精确检验**，不用独立两比例检验 |
@@ -352,8 +352,8 @@ export VLLM_USE_FLASHINFER_SAMPLER=0     # 否则 flashinfer JIT 与 CUDA 12.4 �
 - ✅ **评测口径对照 + 交互检验**（1.5 节 E）
 - ✅ **评分管线自证无偏**（0.7201 vs 0.7211）
 
-**全部分析已脚本化**：`analyze_results.py` 一条命令跑完 6 项零成本分析；
-`analyze_paired.py` 做配对 bootstrap CI 与交互检验。
+**全部分析已脚本化**：`tools/analyze_results.py` 一条命令跑完 6 项零成本分析；
+`tools/analyze_paired.py` 做配对 bootstrap CI 与交互检验。
 
 **已决定不做**（记录理由，避免重走）：
 
@@ -362,7 +362,7 @@ export VLLM_USE_FLASHINFER_SAMPLER=0     # 否则 flashinfer JIT 与 CUDA 12.4 �
 | SFT 对照 | 「RL 优于 SFT」在同模型同数据上已有公开结论（参考项目 SFT −15.2），补它信息量低 |
 | 筛题后重新训练（run3/run4）| 单种子单臂分不清"筛题有效"和"run 间抖动"；要可解释需 2 种子 × 2 臂 = 4 次跑 |
 | 延长训练到 3000+ 步 | 采样口径 600 步后已饱和（H），延长只会继续锐化众数 |
-| 1.5B 全参微调 | 理论 25.8 GiB > 4090 的 23.5 GiB（见 README「环境与预算」）|
+| 1.5B 全参微调 | 理论 25.8 GiB > 4090 的 23.5 GiB（见 README「环境」一节）|
 
 **如果将来要继续，按性价比排序**：
 
@@ -381,16 +381,16 @@ export VLLM_USE_FLASHINFER_SAMPLER=0     # 否则 flashinfer JIT 与 CUDA 12.4 �
 
 | 文件 | 作用 |
 |---|---|
-| `train_grpo.py` | 训练主脚本。启动即打印 `CODE_VERSION` / 显存预算 / 精度 / 运行时梯度检查点 / rollout eval / `seed` |
-| `mem_budget.py` | **开跑前必跑**：秒级估算显存峰值 + 判定能否放下 + 给安全 batch |
-| `eval_grpo.py` | 评测。vLLM 优先（3 分钟/1319 题），支持 LoRA adapter 目录；**显式传 `repetition_penalty` / `top_p` / `eos`**；写子集指纹 |
-| `compare_results.py` | 对照表 + 子集指纹校验 + **McNemar 配对检验** |
-| `analyze_paired.py` | **配对 Δ 的 bootstrap 置信区间 + 交互检验**（支持 eval json 与评分 jsonl 两种输入）|
-| `merge_adapter.py` | LoRA adapter 合并成完整模型（供 vLLM 加载），默认 CPU 合并不抢显存。**必须用 base 环境跑**（venv-vllm 没装 peft）|
-| `filter_by_difficulty.py` | 难度筛选：vLLM 测每题通过率 → 评分文件 + 筛后数据集 + 一行 `SUMMARY` 汇总 |
-| `prepare_data.py` | `--split train/test`：产出同格式数据集。test 供 `filter_by_difficulty.py` 用，**不打乱顺序**以便按题对齐 |
-| `run_seeds.sh` / `eval_seeds.sh` | 换种子复现：训练 / 合并+评测+分析。可重入（已有产物则跳过）|
-| `debug_completions.py` / `debug_train_rollout.py` | 单题原文 / 逐变量隔离（排查 rollout 问题的工具）|
+| `src/train_grpo.py` | 训练主脚本。启动即打印 `CODE_VERSION` / 显存预算 / 精度 / 运行时梯度检查点 / rollout eval / `seed` |
+| `src/mem_budget.py` | **开跑前必跑**：秒级估算显存峰值 + 判定能否放下 + 给安全 batch |
+| `src/eval_grpo.py` | 评测。vLLM 优先（3 分钟/1319 题），支持 LoRA adapter 目录；**显式传 `repetition_penalty` / `top_p` / `eos`**；写子集指纹 |
+| `src/compare_results.py` | 对照表 + 子集指纹校验 + **McNemar 配对检验** |
+| `tools/analyze_paired.py` | **配对 Δ 的 bootstrap 置信区间 + 交互检验**（支持 eval json 与评分 jsonl 两种输入）|
+| `src/merge_adapter.py` | LoRA adapter 合并成完整模型（供 vLLM 加载），默认 CPU 合并不抢显存。**必须用 base 环境跑**（venv-vllm 没装 peft）|
+| `src/filter_by_difficulty.py` | 难度筛选：vLLM 测每题通过率 → 评分文件 + 筛后数据集 + 一行 `SUMMARY` 汇总 |
+| `src/prepare_data.py` | `--split train/test`：产出同格式数据集。test 供 `filter_by_difficulty.py` 用，**不打乱顺序**以便按题对齐 |
+| `scripts/run_seeds.sh` / `eval_seeds.sh` | 换种子复现：训练 / 合并+评测+分析。可重入（已有产物则跳过）|
+| `tools/debug_completions.py` / `debug_train_rollout.py` | 单题原文 / 逐变量隔离（排查 rollout 问题的工具）|
 | `docs/EXPERIMENT_LOG.md` | 本文件：完整实验记录（含被推翻的假设）|
 
 > `results/*.json` 与 `outputs/` 不入库（见 `.gitignore`），按 README「快速开始」重跑即可生成。

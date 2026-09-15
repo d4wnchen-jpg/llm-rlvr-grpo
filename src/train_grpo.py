@@ -3,12 +3,12 @@
 
 用法:
     # pilot（小到不会浪费钱）
-    python train_grpo.py --task gsm8k --use-lora \
+    python3 src/train_grpo.py --task gsm8k --use-lora \
         --steps 10 --num-generations 4 --batch-size 4 \
         --max-completion-length 256 --out outputs/pilot
 
     # 正式跑
-    python train_grpo.py --task gsm8k --use-lora \
+    python3 src/train_grpo.py --task gsm8k --use-lora \
         --steps 300 --num-generations 8 --batch-size 8 \
         --max-completion-length 512 --out outputs/full
 
@@ -321,7 +321,7 @@ def main():
     trainer.train()
     trainer.save_model(args.out)
     print(f"\n✓ 模型已保存 → {args.out}")
-    print(f"下一步评测: python eval_grpo.py --task {args.task} --model {args.out}")
+    print(f"下一步评测: python3 src/eval_grpo.py --task {args.task} --model {args.out}")
 
 
 if __name__ == "__main__":

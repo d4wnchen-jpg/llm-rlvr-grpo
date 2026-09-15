@@ -11,13 +11,13 @@
 #   bash eval_seeds.sh              # 默认种子 1234 5678
 #   bash eval_seeds.sh 1234         # 只测一个
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # 仓库根
 
 SEEDS=("$@")
 [ ${#SEEDS[@]} -eq 0 ] && SEEDS=(1234 5678)
 
 echo "== 基准（run2，种子 42）=="
-python3 analyze_paired.py results/base_vllm.json results/rl_greedy_merged.json || true
+python3 tools/analyze_paired.py results/base_vllm.json results/rl_greedy_merged.json || true
 
 for s in "${SEEDS[@]}"; do
     ad="outputs/run2_seed${s}/checkpoint-1500"
@@ -30,16 +30,16 @@ for s in "${SEEDS[@]}"; do
     fi
     if [ ! -f "$mg/config.json" ]; then
         echo "-- 合并 seed=${s} 的 adapter ..."
-        /root/miniconda3/bin/python3 merge_adapter.py --adapter "$ad" --out "$mg" || {
+        /root/miniconda3/bin/python3 src/merge_adapter.py --adapter "$ad" --out "$mg" || {
             echo "✗ 合并失败，跳过 seed=${s}"; continue; }
     fi
     if [ ! -f "$res" ]; then
         echo "-- 评测 seed=${s} ..."
-        VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python eval_grpo.py \
+        VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/eval_grpo.py \
             --model "$mg" --out "$res" || { echo "✗ 评测失败，跳过 seed=${s}"; continue; }
     fi
     echo "-- seed=${s} vs 基座 --"
-    python3 analyze_paired.py results/base_vllm.json "$res" || true
+    python3 tools/analyze_paired.py results/base_vllm.json "$res" || true
 done
 
 echo

@@ -6,7 +6,7 @@
   → GRPO 学不到任何东西（白烧卡时）
 
 用法:
-    python check_baseline.py --task gsm8k \
+    python3 src/check_baseline.py --task gsm8k \
         --model Qwen/Qwen2.5-1.5B-Instruct --num-problems 20 --num-samples 4
 """
 import argparse

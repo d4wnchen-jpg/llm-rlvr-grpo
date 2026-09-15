@@ -11,8 +11,9 @@ import math
 import re
 from pathlib import Path
 
-R = Path("results")
-D = Path("data")
+ROOT = Path(__file__).resolve().parent.parent   # 仓库根
+R = ROOT / "results"
+D = ROOT / "data"
 
 
 # ---------------------------------------------------------------- 读取
@@ -232,7 +233,7 @@ def a_matrix():
 
 
 # ---------------------------------------------------------------- 6
-def a_zero_std(log=Path("/root/autodl-tmp/run_seeds.log")):
+def a_zero_std(log=Path("/root/autodl-tmp/run_seeds.log")):  # 服务器绝对路径，本地自动跳过
     hdr(6, "退化率随训练下降？（frac_reward_zero_std）")
     if not log.exists():
         skip(str(log)); return

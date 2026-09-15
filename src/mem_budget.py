@@ -22,7 +22,7 @@ from_pretrained，不传 torch_dtype 时 transformers 默认按 **fp32** 加载�
 真实峰值请看训练日志里的 ``[真实显存]`` 行。
 
 用法:
-    python mem_budget.py --batch-size 8 --num-generations 8 --max-completion-length 512
+    python3 src/mem_budget.py --batch-size 8 --num-generations 8 --max-completion-length 512
 
     # 或直接跑 train_grpo.py，它会自动打印同一张表
 """
