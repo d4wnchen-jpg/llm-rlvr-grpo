@@ -49,46 +49,44 @@ flowchart TD
 ## 快速开始
 
 ```bash
-# 1. 环境（★ 必须钉版本：只声明下界的依赖会装出不兼容的大版本，见 PITFALLS）
+# 1. 环境（依赖必须钉版本，原因见 docs/PITFALLS.md）
 pip install "transformers<5" "trl==0.19.1" datasets peft
-#    国内另需：export HF_ENDPOINT=https://hf-mirror.com
+# 国内网络另加：export HF_ENDPOINT=https://hf-mirror.com
 
 # 2. 数据
-python3 src/prepare_data.py --task gsm8k               # 训练集 7473 题
-python3 src/prepare_data.py --task gsm8k --split test   # 评测集同格式副本（筛题/分析用）
+python3 src/prepare_data.py --task gsm8k               # 训练集
+python3 src/prepare_data.py --task gsm8k --split test   # 评测集同格式副本
 
-# 3. ★ 开跑前先算显存（秒级，不占 GPU）
+# 3. 估显存（秒级，不占 GPU）
 python3 src/mem_budget.py --batch-size 8 --num-generations 8 --grad-accum 2 --max-completion-length 512
-#    看结尾的「✅ 放得下 / ❌ 大概率 OOM」再决定是否开跑
 
-# 4. ★ 训练前必做：检查有没有学习信号
+# 4. 测学习信号（训练前必做）
 python3 src/check_baseline.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --num-problems 20 --num-samples 8
-#    看「★ 有信号的题比例」：≥50% 才继续
 
-# 5. 正式训练（多跑几个种子用 scripts/run_seeds.sh）
+# 5. 训练（多个种子用 scripts/run_seeds.sh）
 python3 src/train_grpo.py --task gsm8k --use-lora --no-vllm \
     --steps 1500 --num-generations 8 --batch-size 8 --grad-accum 2 \
     --max-completion-length 512 --lr 5e-6 \
     --lr-scheduler-type constant_with_warmup --warmup-ratio 0.03 \
     --beta 0.005 --seed 42 --save-steps 50 --out outputs/run2
 
-# 6. 合并 adapter（vLLM 不直接吃 LoRA）★ 用 base 环境：venv-vllm 没装 peft
+# 6. 合并 adapter（vLLM 不直接吃 LoRA；用训练环境，venv-vllm 没装 peft）
 /root/miniconda3/bin/python3 src/merge_adapter.py \
     --adapter outputs/run2/checkpoint-1500 --out /root/autodl-tmp/merged1500
 
-# 7. 评测（held-out 全量 1319 题）
+# 7. 评测（vLLM，全量 1319 题）
 VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/eval_grpo.py \
     --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --out results/base_vllm.json
 VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/eval_grpo.py \
     --task gsm8k --model /root/autodl-tmp/merged1500 --out results/rl_greedy.json
 python3 src/compare_results.py results/base_vllm.json results/rl_greedy.json
 
-# 8. 训练分布口径（关键对照）：每题采 8 条算通过率
+# 8. 采样口径评测（每题采 8 条统计通过率）
 VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/filter_by_difficulty.py \
     --model /root/autodl-tmp/merged1500 --data data/gsm8k_test.jsonl \
     --out data/test_rated_rl.jsonl --out-filtered /tmp/x.jsonl
 
-# 9. 一次跑完全部归因分析（不需要 GPU）
+# 9. 归因分析（不需要 GPU）
 python3 tools/analyze_results.py
 ```
 
@@ -134,7 +132,6 @@ docs/
 | 训练环境 | torch 2.5.1+cu124、**transformers 4.57.6**、**trl 0.19.1**、datasets、peft |
 | 评测环境 | 独立 venv：vllm 0.29、transformers 5.x（**没装 peft**，所以合并要用训练环境）|
 | 训练显存 | 1.5B + LoRA r32 + 梯度检查点，batch8×grad_accum2：预算 13.4 GiB，**实测 15.8 GiB** |
-| 预算 | 约 ¥150（75 卡时 × ¥2/h）|
 
 ## License
 
