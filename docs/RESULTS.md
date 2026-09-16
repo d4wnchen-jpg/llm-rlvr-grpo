@@ -1,275 +1,154 @@
-# 结果与发现
+# Detailed Results and Analysis
 
-> 主结果、机制、以及四条可迁移的发现。数字全部在 GSM8K test（1319 题，held-out，子集指纹校验）上测得。
-> 完整过程记录（含被推翻的假设）见 [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md)。
+Supporting numbers for the [README](../README.md). Unless stated otherwise, every
+measurement is on the GSM8K **test** split (1,319 problems, held out from training), on one
+fixed subset verified by fingerprint, evaluated with vLLM.
 
-**评测协议**：GSM8K **test（1319 题，held-out）**，vLLM，`max_new_tokens=512`，
-**显式**指定 `repetition_penalty=1.0` 与 `eos_token_id=[151645,151643]`，同一批题（子集指纹校验）。
-默认**贪心**；另有**采样**口径（`--temperature 0.8 --top-p 0.95`，与训练 rollout 一致）的对照。
-**两种口径的结论不同**，见下。
+## 1. Protocol sensitivity: one silent default flips the conclusion
 
-## 结果
+Same engine, same 1,319 problems, changing only `repetition_penalty`:
 
-### 主结果（贪心口径）：单卡 ~11 GPU·h 上 RLVR 有效，跨 3 个种子稳定
-
-| 模型（LoRA r32，1500 步）| GSM8K test | Δ | 95% CI | McNemar p |
-|---|---|---|---|---|
-| Qwen2.5-1.5B-Instruct（基座） | 966/1319 = **73.2%** | — | — | — |
-| + GRPO · seed 42 | 1012/1319 = 76.7% | +3.49 | [+1.52, +5.53] | 0.0009 |
-| + GRPO · seed 1234 | 1018/1319 = 77.2% | +3.94 | [+1.90, +5.99] | 0.0003 |
-| + GRPO · seed 5678 | 1028/1319 = 77.9% | +4.70 | [+2.73, +6.75] | 0.0000 |
-
-**Δ = +4.04 ± 0.61（SD, n=3）** —— 三个种子单独都显著，极差仅 1.2 点。
-
-单次训练 **11 h 08 min**（26.7 s/it）≈ 11 GPU·h ≈ **¥22**。曲线（seed 42，贪心）：
-
-| 步数 | 600 | 1000 | 1500 |
-|---|---|---|---|
-| 准确率 | 74.9% | 75.7% | **77.0%** |
-| Δ（p）| +1.7（0.092 ❌）| +2.4（0.017 ✅）| **+3.8（0.0003 ✅✅）** |
-
-### ★★ 关键限定：训练**只锐化众数，不改善分布**
-
-训练 rollout 用的是 T=0.8 / top_p=0.95 **采样**，而默认评测用贪心。两套口径都测（G=8，1319 题）：
-
-| 步数 | 贪心 Δ | 采样 Δ | 采样 95% CI |
-|---|---|---|---|
-| 600 | +1.67（p=0.092 ❌）| +1.38 | — |
-| 1000 | +2.43（p=0.017 ✅）| +2.19 | [+1.30, +3.09] ✅ |
-| **1500** | **+3.79**（p=0.0009）| +1.78 | [+0.87, +2.70] ✅ |
-
-**贪心口径一路上升；采样口径从 600 步起就基本饱和** —— 三点都在 +1.4 ~ +2.2 之间，
-两两差异不显著（1000 → 1500：Δ = −0.41，95% CI [−1.20, +0.39] **跨 0**）。
-
-> ⚠️ **交互检验**（贪心Δ − 采样Δ）= +1.71，95% CI **[−0.43, +3.88] 跨 0**。
-> 所以**不能说"增益依赖解码口径"** —— 同一模型上"一个口径显著、另一个不显著"
-> 推不出交互，这是「显著 vs 不显著，本身未必显著」那个陷阱。
-
-#### 能力边界完全没动：pass@k 的 Δ 单调衰减到 0
-
-用同一批 k/8 数据算无偏 pass@k：
-
-| k | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
-|---|---|---|---|---|---|---|---|---|
-| 基座 | 72.01% | 81.99% | 86.19% | 88.60% | 90.16% | 91.27% | 92.12% | **92.80%** |
-| +GRPO | 73.79% | 83.16% | 86.91% | 88.97% | 90.34% | 91.34% | 92.12% | **92.72%** |
-| **Δ** | **+1.78** | +1.17 | +0.72 | +0.38 | +0.18 | +0.07 | **+0.00** | **−0.08** |
-
-按题统计 k 的转移：
-
-```
-k=0  → k>0      学会新题（扩大边界）     33 题
-k>0  → k=0      变成完全不会             34 题    → 边界净 −1，等于没动
-1≤k<8 → k=8     边缘题变稳定            143 题
-k=8  → k<8      从稳定退化              100 题    → 稳定集净 +43
-```
-
-**RL 把 143 道题推成「稳定会做」，同时把 100 道踢下去；但「从不会到会」净增 −1 道。**
-
-#### 增益高度集中在中间层，两端（训练时的零梯度层）几乎不动
-
-| 按基座 k/8 分层 | 题数 | 基座 | +GRPO | Δ | 对净增益的贡献 |
+| Protocol | Base | +GRPO 1500 | Δ | p | Conclusion |
 |---|---|---|---|---|---|
-| k=0（完全不会）| 95 | 6.3% | 7.4% | +1.1 | 1 题 |
-| k=1-2（很难）| 132 | 20.5% | 24.2% | +3.8 | 5 题 |
-| **k=3-5（中等）** | **236** | 53.4% | 64.4% | **+11.0** | **26 题（57%）** |
-| k=6-7（接近会）| 289 | 86.5% | 90.3% | +3.8 | 11 题 |
-| k=8（稳定会）| 567 | 98.2% | 98.8% | +0.5 | 3 题 |
+| `rp=1.1` (HF's silent default) | 949 | 967 | +1.4 | **0.26** | no effect |
+| `rp=1.0` (explicit) | 963 | 1007 | +3.3 | **0.0021** | highly significant |
+| `rp=1.0` (vLLM default) | 966 | 1016 | +3.8 | 0.0003 | highly significant |
 
-**18% 的题（k=3-5）贡献了 57% 的增益**；而 k=0 和 k=8 正是训练时组内无方差、**零梯度**的两层。
+Per-problem decomposition of the `1.1 → 1.0` change: the base model gains 131 and loses 117
+(net +14); the GRPO model gains 130 and loses 90 (net +40). About **250 problems (19%) flip**,
+while the net effect is only 14–40 problems. **The flip noise introduced by a decoding
+parameter is the same order of magnitude as the effect being measured.**
 
-#### 约 43% 的净增益是「指令依赖」的
+Mechanism: the base model is more repetitive (4-gram repetition rate 0.111 versus 0.081 for
+the GRPO model), so a repetition penalty damages it more (117 versus 90 broken).
 
-- default 下净增益 **+46 题**，但「三种模板（default/alt/minimal）都答对」只净增 **+26 题**
-  → **只有 57% 的增益在去掉指令后仍成立**
-- 而且新修好的题**比原有会做的题更脆弱**：原有会做的题 84.7% 在三个模板下都稳，新修的只有 61%
+## 2. What RL changed about the output distribution
 
-#### 三个种子的错误高度相关
+| | Mean length | Lexical diversity | 4-gram repetition | Self-correction markers |
+|---|---|---|---|---|
+| Base | 994 | 0.445 | 0.111 | 15 (0.7%) |
+| +GRPO 1500 | **927 (−6.7%)** | **0.478 (+7.3%)** | **0.081 (−27%)** | 11 (0.6%) |
 
-```
-被 3 个种子共同修好   55 题         被 3 个种子共同弄坏  15 题
-被 1 个种子单独修好  100 题
-三种子多数投票 77.18%  vs  单种子均值 77.28%    →  −0.10 点
-```
+Chain-of-thought gets **shorter**, not longer — the opposite of the length growth reported
+for R1-Zero-style training. Repetition drops by 27%. For both models, **incorrect answers
+are longer than correct ones**.
 
-**集成一点提升都没有** → 失败是系统性的，不是随机噪声。
+## 3. Negative result: no "aha moment" at this scale
 
-### 🎯 机制：训练在锐化众数，同时把梯度信号耗尽
+Self-correction markers go from 15 to 11 out of 1,319 — no change. At 1.5B with LoRA over
+1,500 steps, the R1-Zero-style emergence of self-correction does not appear.
 
-```
-训练把中间层（k=3-5）的题推向 k=8
-   ↓   143 题升到全对 / 100 题掉下来，净 +43
-更多组变成「全对」→ 组内零方差 → 梯度枯竭
-   ↓   退化率实测：前 200 步 0.578 / 0.588  →  后 200 步 0.623 / 0.655  ↑
-采样口径的增益在 600 步后饱和（+1.4 ~ +2.2）
-   ↓
-贪心口径继续上升（+1.67 → +3.79）→ 纯锐化
-   ↓
-能力边界始终不动（pass@k 的 Δ 单调衰减到 0；「从不会到会」净 −1）
-```
+## 4. The gain depends partly on the training instruction
 
-> **退化率上升不是 bug，是机制的签名**：训练把题变成「稳定会做」，组内就没方差了，
-> 梯度自然变少。两个种子的日志一致（0.578→0.623、0.588→0.655），
-> 且**前 200 步的 0.578/0.588 与基座独立实测的 0.579 吻合**（交叉验证）。
+| Prompt template | Base | +GRPO | Δ | p |
+|---|---|---|---|---|
+| `default` (the one used in training) | 73.2% | 77.0% | +3.8 | 0.0003 |
+| `alt` (paraphrase, still requests `\boxed{}`) | 73.1% | 77.1% | +4.0 | 0.0002 |
+| **`minimal` (no instruction at all)** | 70.7% | 72.3% | **+1.6** | **0.17** |
 
-#### 📌 这套结论是被数据纠正四次之后才站住的
+Removing the instruction costs the base model 2.5 points and the GRPO model **4.7** points,
+so the trained model depends on the instruction more than the base does. Of the 46 net
+problems the model gains under `default`, only 26 (57%) survive under `minimal`. Problems
+the model newly solves are also more fragile than the ones it already solved: 84.7% of
+pre-existing correct answers hold under all three templates, versus 61% of the new ones.
 
-| 原结论 | 打回它的证据 | 修正后 |
+## 5. Two classes of perturbation
+
+| Perturbation | Problems flipped | Net effect | Nature |
+|---|---|---|---|
+| Prompt template (`default` → `alt`) | 120 / 131 (9–10%) | −2 / +1 | **symmetric** — noise |
+| Greedy → sampled (T=0.8, top_p=0.95) | 219 (16.6%) | −15 (p=0.34) | **symmetric** — noise |
+| `repetition_penalty` 1.1 → 1.0 | 248 / 220 (17–19%) | +14 / +40 | **biased — changes the conclusion** |
+| Sample count (G=1 → G=8) | — | +0.53 → +1.78 | **biased — changes the conclusion** |
+
+The number of problems flipped does not predict whether a conclusion survives; the *bias*
+of the flips does. Changing the template flips more problems (120) than the true effect
+(+50 problems) and yet leaves the paired test valid, because the flips cancel. Changing the
+repetition penalty flips a comparable fraction and moves the p-value from 0.0021 to 0.26.
+
+## 6. Train and test difficulty are not the same distribution
+
+Measured with an identical script and identical parameters, 8 samples per problem:
+
+| | Train (random 2,000) | Test (1,319) |
 |---|---|---|
-| "增益消失了"（采样口径 +0.53）| 单条/题噪声太大；G=8 测出 +1.78（CI 不含 0）| "减半，但仍显著" |
-| "增益是贪心专属" | 交互 CI [−0.43, +3.88] 跨 0 | 收回，不能这么说 |
-| "训练越久越好，曲线未饱和" | 采样口径 600 步后饱和；退化率反而上升 | "只锐化众数，不改善分布" |
-| "采样在 1000 步见顶后回落" | 1000→1500 的 Δ CI [−1.20, +0.39] 跨 0 | "从 600 步起就饱和" |
-
-**一个 ~2 点的效应，用 1 条/题去测会得出相反的结论。** 这和发现 A 是同一个道理：
-**测量口径指定不足（这里是样本数，那里是解码参数）足以翻转结论。**
-
-#### 顺带这条测量还自证了评分管线无偏
-
-```
-base 在 test 上 G=8 的 p_mean = 0.7201
-base 单条采样的评测（951/1319）= 0.7211     ← 两套独立测量差 0.1 个点
-```
-
-#### 一个支持"锐化"的细节
-
-RL 的 test **全对** 567 → **610（+43）**，而**全错** 95 → **96（+1，没动）**。
-RL 主要是把"本来就会的题变成次次都对"，几乎没有制造新的"次次都错"。
-若交互其实存在，机制就在这里；但如上所述，**交互没有被证明**。
-
-> **口径一致性核对**：早期经 adapter 路径测的贪心 RL = **1016**，本次合并模型 + vLLM = **1012**
-> （差 4 题）→ **合并无损、两条路径互相印证**。所以这个 2×2 里**没有跨管线比较**，
-> 四个数全来自同一套 vLLM 管线。
-
-#### 附带结论：GSM8K **train 比 test 容易约 10 点**
-
-同一脚本、同一参数、同一个模型：
-
-| | train（随机 2000）| test（1319）|
-|---|---|---|
-| p_mean (G=8) | **0.8214** | **0.7201** |
+| Mean per-sample pass rate | **0.821** | **0.720** |
 | pass@8 | 96.8% | 92.8% |
-| 退化率 | 57.9% | 50.2% |
-| 全对 | 1093（54.6%）| 567（43.0%）|
-| 全错 | 65（3.2%）| 95（7.2%）|
+| Zero-variance groups (k=0 or k=8) | 57.9% | 50.2% |
+| All correct | 1,093 (54.6%) | 567 (43.0%) |
+| All wrong | 65 (3.2%) | 95 (7.2%) |
 
-→ 这 10 点是**真的**（不是评分脚本有偏），所以**"数据接近饱和"要限定在 train 上**：
-train 上 57.9% 的组零梯度，test 上是 50.2%。
+The 10-point gap is real, not a pipeline artefact — which means the "the data is nearly
+saturated" statement applies to the **train** split specifically.
 
-> **协议修正的因果（这段比数字重要）**：初版评测**没有显式传 `repetition_penalty`**，
-> HF 的 `generate` 静默继承了 Qwen `generation_config` 里的 **1.1**，把所有数字压低约 10 个点
-> （基座 71.9%→73.2%，1500 步 73.3%→77.0%），**并把 Δ 从 +3.8 压缩成 +1.4**
-> —— RL 模型的 CoT 更长，受重复惩罚伤害更大，所以旧协议**系统性地掩盖了 RL 的效果**。
-> 修正后基座 73.2% 与 [Qwen2.5 论文](https://arxiv.org/abs/2409.12122)的 73.2%（4-shot）吻合。
+On the train split, the observed 57.9% degeneracy is 2.8× what an i.i.d. binomial with the
+measured mean (p = 0.821, giving 20.7%) would predict, confirming that per-prompt pass rates
+are bimodal. But **94.4% of the degenerate groups are all-correct**, only 5.6% are all-wrong:
+the wasted gradient comes from problems being too *easy*, not too hard.
 
-### 第一个实验（150 步 / 弱配置）是一个干净的 null —— 五条机制诊断
+The rating pipeline is unbiased: the base model's mean pass rate on test under this
+measurement is 0.7201, while an independent single-sample evaluation gives 951/1319 =
+0.7211 — a 0.1 point difference.
 
-它 Δ=−0.5（p=0.61），但**不是"失败"**，而是一次可解释的负结果：
+## 7. The first run (150 steps, weak configuration) was a clean null
 
-1. **优化太弱**：`lr=1e-6` 是**全参微调**的量级，我们用的却是 LoRA，且 linear 调度把它衰减归零。
-   证据：训练后 `lora_B |max| = 3.96e-05`，**基本停在零初始化**（改对后是 1.88e-3，**47×**）
-2. **KL 锚太死**：`beta=0.04`，参考实现用 0.001（差 40×）
-3. **信号密度低**：`frac_reward_zero_std ≈ 0.5` —— **一半的组零方差、零梯度**。
-   实测（基座 × train 前 2000 题 × G=8）：退化 **57.9%**，i.i.d. 零假设只有 20.7% → **2.8×**
-   → **per-prompt 通过率确实是双峰的**。但退化里**全对 k=8 占 94.4%（1093/1158）**，
-   全错 k=0 只有 65 题 → **浪费几乎全来自"题太简单"，不是"题太难"**
-4. **数据接近饱和**：同一批实测平均单条通过率 **0.821**、pass@8（8 条至少一条对）**96.8%**、
-   8 条全错的题只占 **3.25%**。这个模型在 GSM8K 上几乎没有"不会做"的题，只有"一次做不对"的题
-   → GRPO 能推的只有中间那 **42.1%** 的带，上升空间本来就小
-5. **有效数据量极小**：数据池 7473，但 1500 步 × 2 prompt = 只采样 **3000 个 prompt（epoch 0.40）**，
-   再打五折 → **约 750 个题真的产生了梯度**（优化步只有 2 道题，梯度噪声大）
+It scored Δ = −0.5 (p = 0.61). It is an interpretable negative result rather than a failure:
 
-> **已有同模型同数据的公开结果**：[RLVR-vs-SFT-Qwen2.5-1.5b](https://github.com/jayminbhan/RLVR-vs-SFT-Qwen2.5-1.5b)
-> 用 verl + vLLM + 6×4090（**193 GPU·h**）报告 GRPO **+11.9**、SFT **−15.2**。
-> 我们的差异化：**① 单卡 ~11 GPU·h 的算力前沿（每优化步增益与他们接近：0.0025 vs 0.0031 点/步）
-> ② 为什么朴素配置一步都不动（五条机制 + 五个静默坑）③ 数据难度筛选**。
+1. **Optimisation far too weak.** `lr=1e-6` is a full-fine-tuning magnitude applied to LoRA,
+   and a `linear` schedule decayed it to zero. Evidence: `lora_B |max| = 3.96e-05` after
+   training, essentially its zero initialisation. With `5e-6` and `constant_with_warmup` it
+   reaches 1.88e-3 — a factor of 47.
+2. **KL anchor far too strong.** `beta=0.04` versus 0.001 in the reference implementation — a
+   factor of 40.
+3. **Low signal density.** `frac_reward_zero_std ≈ 0.5`, i.e. half of the groups contribute no
+   gradient (see §6).
+4. **The data is nearly saturated.** Only the middle band — 42.1% of the training problems —
+   can contribute gradient at all.
+5. **Very little effective data.** 1,500 steps × 2 prompts = 3,000 prompt draws from a pool of
+   7,473 (0.40 epochs), and with roughly half the groups degenerate that leaves about 750
+   problems that actually produced gradient.
 
-> 进度与完整诊断记录：**[docs/EXPERIMENT_LOG.md](docs/EXPERIMENT_LOG.md)**
+### Relation to published work
 
-## 发现
+[jayminbhan/RLVR-vs-SFT-Qwen2.5-1.5b](https://github.com/jayminbhan/RLVR-vs-SFT-Qwen2.5-1.5b)
+uses the same model and the same dataset with verl + vLLM on 6×4090 (**193 GPU·h**) and
+reports GRPO **+11.9** and SFT **−15.2**. The per-optimizer-step gain is close (0.0031 versus
+0.0025 points/step here); the difference is mostly steps and prompts per step (~25 versus 2).
+Their SFT result is why no SFT control was run here.
 
-三个都是在**同一批 1319 题**上测出来的结果——不是训练出来的，是分析出来的。
+## 8. Superseded conclusions
 
-### 发现 A：一个静默默认参数，决定你的 RL 实验是「白做了」还是「显著有效」
+Recorded so the same ground is not covered twice.
 
-同一引擎（HF `generate`）、同一批题、**只改 `repetition_penalty` 一个参数**：
+- **"RL makes CoT longer, which the repetition penalty then damages."** The data shows CoT
+  becomes *shorter* (994 → 927 characters).
+- **"The repetition penalty hurts the RL model more."** It is the base model that is damaged
+  more (117 versus 90 problems broken); the RL model nets more simply because it is more
+  robust to it.
+- **"vLLM and HF differ substantially as engines."** With identical parameters they differ by
+  0.2–0.7 points. The 10-point gap observed earlier was entirely `repetition_penalty`.
+- **"The gain disappears under the training decoding regime."** Measured with one sample per
+  problem, giving +0.53 (p=0.69). With 8 samples per problem it is +1.78, CI [+0.87, +2.70],
+  which is significant.
+- **"The gain is specific to greedy decoding."** The interaction test gives +1.71 with a 95%
+  CI of [−0.43, +3.88]; it crosses zero, so this cannot be claimed.
+- **"The curve is not saturated, so training longer will keep helping."** Under the training
+  distribution the gain is flat from step 600, and the degenerate-group rate *rises* with
+  training rather than falling.
+- **"The sampled gain peaks at step 1000 and then declines."** The 1000 → 1500 change is
+  −0.41 with a CI of [−1.20, +0.39]; it is not significant.
+- **"The degenerate-group rate falls during training."** It rises: 0.578 → 0.623 and
+  0.588 → 0.655 across two seeds.
+- **"1.5B full fine-tuning fits in 24 GB."** `mem_budget.py` was reporting zero optimizer
+  memory for full fine-tuning; corrected, it needs ~25.8 GiB and does not fit.
 
-| 协议 | 基座 | +GRPO 1500 步 | Δ | McNemar p | 结论会怎么写 |
-|---|---|---|---|---|---|
-| `rp=1.1`（HF `generate` 的**静默默认**）| 949 | 967 | +1.4 | **0.26** | ❌ 「无可测量提升」|
-| **`rp=1.0`（显式传）** | 963 | 1007 | **+3.3** | **0.0021** | ✅✅ 「极显著提升」|
-| `rp=1.0`（vLLM 默认）| 966 | 1016 | +3.8 | 0.0003 | ✅✅ |
+## 9. Environment notes
 
-**逐题分解**（rp 1.1 → 1.0，同一批题配对）：
-
-| 模型 | 错→对 | 对→错 | 净 |
-|---|---|---|---|
-| 基座 | 131 | 117 | +14 |
-| +GRPO 1500 | 130 | **90** | **+40** |
-
-两个关键读数：
-
-1. 「错→对」两侧**几乎完全相等**（131 vs 130），差异**全在「对→错」**（117 vs 90）
-2. **约 250 题（19%）被这一个参数翻转，而净效果只有 +14 / +40 题** ——
-   **解码参数造成的翻转噪声与真实效应同量级**。当效应只有 2–4 个点时，协议必须显式固定
-
-> **为什么这对别人也有用**：用 TRL 做 GRPO 时，**训练 rollout 的 `repetition_penalty` 是 1.0**
-> （TRL 自己构造 `GenerationConfig`），而用朴素的 `model.generate(...)` 评测会
-> **静默继承模型 `generation_config` 里的 1.1** → **训练与评测的解码策略不一致**。
-> 这正是「训练 reward 涨了但评测不动」的一个可能原因（本项目 run1：训练 reward +3.4 点，评测 −0.5 点）。
-
-### 发现 B：RL 学到的是「输出更不重复」，不是「想得更久」
-
-| | 平均长度 | 词汇多样性 | 4-gram 重复率 | 自我纠错标记 |
-|---|---|---|---|---|
-| 基座 | 994 | 0.445 | 0.111 | 15（0.7%）|
-| **+GRPO 1500** | **927（−6.7%）** | **0.478（+7.3%）** | **0.081（−27%）** | 11（0.6%）|
-
-- **CoT 没有变长，反而略短** —— 与 R1-Zero 著名的「长度增长」现象**相反**
-- **重复度下降 27%**，这是 RL 学到的可测量行为变化
-- 与发现 A **互相印证**：基座更重复（0.111）→ 重复惩罚对它破坏更大（117 vs 90）✓
-
-### 发现 C（负结果）：这个规模上没有「aha moment」
-
-自我纠错标记（"wait" / "let me check" / "actually" 等）在基座（15 个）和 RL（11 个）之间**没有变化**。
-很多小规模 RLVR 复现会声称出现了 aha moment —— **在 1.5B + LoRA + 1500 步这个规模上，我们的测量说不。**
-
-### 附带：答错的回答反而更长
-
-| | 答对平均长度 | 答错平均长度 |
-|---|---|---|
-| 基座 | 951 | 1117 |
-| +GRPO 1500 | 878 | 1085 |
-
-两个模型都如此 —— **"想得更久"在这里等于"绕进去了"**。
-
-### 发现 D：收益**部分依赖训练指令** —— 重要的 caveat
-
-| prompt 模板 | 基座 | +GRPO 1500 | Δ | McNemar p |
-|---|---|---|---|---|
-| `default`（训练用的）| 73.2% | 77.0% | **+3.8** | 0.0003 ✅✅ |
-| `alt`（同义改写，仍要求 `\boxed{}`）| 73.1% | 77.1% | **+4.0** | 0.0002 ✅✅ |
-| **`minimal`（完全不给指令）** | 70.7% | 72.3% | **+1.6** | **0.17** ❌ |
-
-去掉指令后：基座 **−2.5 点**，**RL 模型 −4.7 点** → **RL 比基座更依赖那个指令。**
-
-→ 与发现 B 一致：这次 RL 的收益里**有一部分是「格式/指令适配」，不是纯推理能力提升**。
-
-> 诚实标注：`minimal` 协议下模型可能不输出 `\boxed{}`，提取会退到「取最后一个数字」兜底。
-> 四个协议的空预测率都是 **0–1/1319**（不是提取失败），但兜底可能贡献部分掉分——
-> **「Δ 从 +3.8 降到 +1.6」这个测量是可靠的（同一提取规则、同一批题、配对），
-> 「其中多少来自格式适配 vs 提取噪声」未进一步隔离。**
-
-### 附：两类扰动 —— 对称的只是噪声，有偏的会改结论
-
-| 扰动 | 翻转题数 | 净效果 | 性质 |
-|---|---|---|---|
-| 换 prompt 模板（同义改写）| 120–131 题（**9–10%**）| −2 / +1 | ✅ **对称** → 只是噪声 |
-| 改 `repetition_penalty` | 220–248 题（**17–19%**）| +14 / +40 | ⚠️ **有偏** → 会改变结论 |
-
-> 换模板翻转的题（120 题）**比真实效应（+50 题）还多** —— 但只要扰动**对称**，
-> 配对检验仍能测出真实效应。这解释了**为什么必须做配对比较**，
-> 以及**为什么不同论文的绝对准确率不可直接比较**。
->
-> 而 `repetition_penalty` 是**有偏**扰动：它不只是增加噪声，还会**改变 Δ 和 p 值**。
-
+- **Training** uses HF `generate` for rollouts; **evaluation** uses vLLM in a separate
+  virtualenv (vLLM 0.29). The vLLM environment has no `peft`, so adapters must be merged in
+  the training environment first.
+- GPU utilisation during training rollout is only **~22%**, with power draw around 280 W of
+  450 W. The bottleneck is the HF decoding loop, not memory or compute. This is the main
+  known inefficiency in the setup; see the Limitations section of the README for why the
+  engine was not switched.
+- Training and evaluation peaks: theoretical 8.96 GiB, measured 15.8 GiB on the GPU.
