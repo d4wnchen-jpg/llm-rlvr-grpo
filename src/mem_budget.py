@@ -11,7 +11,7 @@
                                                     强制走 fp32（官方 fp32 列表），
                                                     所以是 4 字节不是 2 字节
   B) 激活：不开梯度检查点时每层要留 6H+2I 个中间量，
-     16 seq × 896 token × 28 层 = 21 GiB —— 这才是 batch16 直接爆的主因。
+     16 seq × 896 token × 28 层 ≈ 20.3 GiB —— 这才是 batch16 直接爆的主因。
 
 另一个坑（train_grpo.py 已修）：TRL 把 model_init_kwargs 原样转给
 from_pretrained，不传 torch_dtype 时 transformers 默认按 **fp32** 加载，

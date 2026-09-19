@@ -42,18 +42,22 @@ checkpointing on):
 | Component | Formula | Size |
 |---|---|---|
 | Weights (bf16) | `params × 2 B` — loading without `torch_dtype` silently defaults to **fp32**, doubling this | 2.88 GiB |
-| LoRA + AdamW | adapter params × 10 B (grad + two moments) | 0.41 GiB |
+| LoRA + AdamW | `n_train × 12 B` — LoRA weights 2 B + grad 2 B + two fp32 AdamW moments 8 B; `r=32` gives ~3.7×10⁷ adapter params | 0.41 GiB |
 | Rollout KV cache | `G × (P+L) × layers × 2 × n_kv × head_dim × 2 B`, with `G` the *generation* batch | 0.38 GiB |
 | **logits** | `B × L × vocab × 2 B` — **independent of model size** | 1.16 GiB |
 | **logp** | `B × L × vocab × 4 B` — autocast forces `softmax`/`log_softmax` to fp32, so 4 bytes per element, not 2 | 2.32 GiB |
-| Activations (checkpointed) | `layers × B(P+L) × H × 2`; **uncheckpointed it becomes `layers × B(P+L) × (6H+2I) × 2`** | 1.11 GiB / **21.3 GiB** |
+| Activations, checkpointed | `layers × B(P+L) × H × 2`, plus one layer's recompute | 1.11 GiB |
+| Activations, **not** checkpointed | `layers × B(P+L) × (6H+2I) × 2` | **10.1 GiB** at batch 8 · **~20.3 GiB** at batch 16 ← the OOM case |
 | CUDA context + workspaces | empirical constant | 0.70 GiB |
-| **Theoretical total** | | **8.96 GiB** |
+| **Theoretical total** | (batch 8, checkpointing on) | **8.96 GiB** |
 
 Three conclusions:
 
-1. **Gradient checkpointing is the difference between running and OOMing.** Without it,
-   activations alone reach 21 GiB.
+1. **Gradient checkpointing is the difference between running and OOMing.** At batch 8 the
+   activation block is 1.11 GiB with checkpointing versus **10.1 GiB** without; at batch 16 the
+   uncheckpointed figure reaches **~20.3 GiB**, which is what blew up the first configuration.
+   Note that both numbers scale with batch size — the commonly quoted "21 GiB" belongs to
+   batch 16, **not** to the batch-8 configuration the table above describes.
 2. **Never let the model load as fp32.** `from_pretrained` without `torch_dtype` defaults to
    fp32; the `torch_dtype: bfloat16` in `config.json` does not influence this decision. The
    1.5B model wastes 2.9 GiB and runs about twice as slowly.
