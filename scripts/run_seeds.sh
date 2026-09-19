@@ -8,7 +8,7 @@
 #   训练层面。不知道这个风险存在，是被问倒的地方。
 #
 # 用法:
-#   nohup bash run_seeds.sh > /root/autodl-tmp/run_seeds.log 2>&1 &
+#   nohup bash scripts/run_seeds.sh > run_seeds.log 2>&1 &
 #   bash run_seeds.sh 1234                 # 只跑一个种子
 #   SAVE_STEPS=250 bash run_seeds.sh       # 省磁盘（默认 50，一次 30 个 ckpt）
 #
@@ -17,7 +17,7 @@
 set -u
 cd "$(dirname "$0")/.."   # 仓库根
 
-PY=/root/miniconda3/bin/python3
+PY="${TRAIN_PY:-python3}"   # training environment (TRL + peft)
 SAVE_STEPS="${SAVE_STEPS:-50}"
 SEEDS=("$@")
 [ ${#SEEDS[@]} -eq 0 ] && SEEDS=(1234 5678)

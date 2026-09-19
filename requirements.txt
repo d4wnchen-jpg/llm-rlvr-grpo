@@ -1,27 +1,36 @@
-# RL 训练环境 —— ★ 实测可用的版本组合
+# RL training environment -- versions verified together
 #
-# ============ 已验证组合（AutoDL PyTorch 2.5.1 + CUDA 12.4 镜像）============
-#   torch        2.5.1+cu124   （镜像自带）
-#   transformers 4.57.6        ★ 必须 <5
-#   trl          0.19.1        ★ 必须 <=0.19.1
-#   peft / datasets  最新即可
+# ============ Verified combination ============
+#   torch        2.5.1+cu124   (from the base image)
+#   transformers 4.57.6        <- must stay below 5
+#   trl          0.19.1        <- must stay at or below 0.19.1
+#   peft / datasets            latest is fine
 #
-# ============ 为什么锁定这两个上界（三个坑的根因）============
-#   坑 1: trl >= 0.20 会 import torch.distributed.fsdp.FSDPModule
-#         → 该 API 是 torch 2.6+ 才有的，torch 2.5.1 报 ImportError
-#   坑 2: transformers >= 5.0 把 _is_package_available() 的返回值
-#         从 bool 改成 tuple (False, None)
-#         → TRL 的 `if is_vllm_available():` 判断「非空元组」恒为真
-#         → 没装 vllm 也去 import vllm → ModuleNotFoundError
-#   共同根因：上游依赖只写了下界（transformers>=4.51），
-#             pip 就装了 API 不兼容的新大版本。
+# ============ Why these two upper bounds ============
+#   1. trl >= 0.20 imports torch.distributed.fsdp.FSDPModule, which only exists in
+#      torch >= 2.6. With torch 2.5.1 this raises ImportError.
+#   2. transformers >= 5.0 changed the return type of _is_package_available() from
+#      bool to a tuple (False, None). TRL's `if is_vllm_available():` then evaluates a
+#      non-empty tuple as truthy, so it tries to import vllm even when vllm is not
+#      installed, raising ModuleNotFoundError.
+#   Common root cause: the upstream packages declare only lower bounds
+#   (e.g. transformers>=4.51), so pip installs an API-incompatible major version.
 #
-# ============ 安装命令 ============
+# ============ Install ============
 #   pip install "transformers<5" "trl==0.19.1" datasets peft
 #
-# ============ vLLM（可选，单独装）============
-#   TRL 0.19.1 时代对应 vLLM 0.8.x（注意 vLLM 0.8 需要 torch>=2.6，
-#   与本镜像的 torch 2.5.1 冲突 → 本环境不装 vLLM，用 --no-vllm）
+# ============ Evaluation environment (separate, not needed for training) ============
+#   vLLM is installed in its own virtualenv with its own torch, because it requires a
+#   newer torch than the training image provides. Keep the two apart.
+#
+#   Two consequences worth knowing:
+#     - That environment does NOT have peft, so a LoRA adapter must be merged into a
+#       full model in the training environment first (see src/merge_adapter.py).
+#     - Evaluation is ~12x faster than with HF generate: about 3 minutes for 1,319
+#       problems versus 30-36 minutes.
+#
+#   If flashinfer fails to JIT-compile against the system CUDA toolkit, set
+#   VLLM_USE_FLASHINFER_SAMPLER=0 (see docs/PITFALLS.md).
 
 transformers<5
 trl==0.19.1

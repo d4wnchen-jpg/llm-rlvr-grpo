@@ -2,7 +2,7 @@
 """把已有结果一次性榨干：6 个零成本分析。不需要 GPU。
 
 用法:
-    cd ~/autodl-tmp/llm-rlvr-grpo && python3 analyze_results.py
+    python3 tools/analyze_results.py        # 从仓库根目录运行
 
 设计原则：**缺文件就跳过并说明**，不因为少一个产物就整个崩掉。
 """
@@ -233,7 +233,10 @@ def a_matrix():
 
 
 # ---------------------------------------------------------------- 6
-def a_zero_std(log=Path("/root/autodl-tmp/run_seeds.log")):  # 服务器绝对路径，本地自动跳过
+def a_zero_std(log=None):
+    """训练日志路径：默认从环境变量 RLVR_TRAIN_LOG 读，没有就跳过这一节。"""
+    import os
+    log = Path(log or os.environ.get("RLVR_TRAIN_LOG", ROOT / "run_seeds.log"))
     hdr(6, "退化率随训练下降？（frac_reward_zero_std）")
     if not log.exists():
         skip(str(log)); return

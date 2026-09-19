@@ -174,14 +174,20 @@ the rating pipeline.
 
 ## Reproducing
 
+Two environments are involved and they need different `torch` versions, so they are kept
+apart: **training** (TRL + peft) and **evaluation** (vLLM). Below, `python3` means "the
+interpreter of the environment named in the section comment", and `$MERGED` is a scratch
+path for the merged model (~2.9 GB — keep it outside the repository).
+
 ```bash
+# ---- training environment ----
 pip install "transformers<5" "trl==0.19.1" datasets peft
 
 # data
 python3 src/prepare_data.py --task gsm8k
 python3 src/prepare_data.py --task gsm8k --split test
 
-# pre-flight checks
+# pre-flight checks: peak VRAM, and whether the training set carries a learning signal
 python3 src/mem_budget.py --batch-size 8 --num-generations 8 --grad-accum 2 --max-completion-length 512
 python3 src/check_baseline.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --num-problems 20 --num-samples 8
 
@@ -192,29 +198,32 @@ python3 src/train_grpo.py --task gsm8k --use-lora --no-vllm \
     --lr-scheduler-type constant_with_warmup --warmup-ratio 0.03 \
     --beta 0.005 --seed 42 --save-steps 50 --out outputs/run2
 
-# merge the LoRA adapter (vLLM cannot read adapters; run this in the training environment)
-/root/miniconda3/bin/python3 src/merge_adapter.py \
-    --adapter outputs/run2/checkpoint-1500 --out /root/autodl-tmp/merged1500
+# merge the LoRA adapter into a full model; needs peft, so it runs in this environment
+MERGED=/tmp/merged1500
+python3 src/merge_adapter.py --adapter outputs/run2/checkpoint-1500 --out $MERGED
 
-# evaluate with vLLM
-VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/eval_grpo.py \
-    --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --out results/base_vllm.json
-VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/eval_grpo.py \
-    --task gsm8k --model /root/autodl-tmp/merged1500 --out results/rl_greedy.json
-python3 src/compare_results.py results/base_vllm.json results/rl_greedy.json
+# ---- evaluation environment (vLLM) ----
+# greedy evaluation, 1,319 problems, ~3 minutes per model
+python3 src/eval_grpo.py --task gsm8k --model Qwen/Qwen2.5-1.5B-Instruct --out results/base_vllm.json
+python3 src/eval_grpo.py --task gsm8k --model $MERGED --out results/rl_greedy.json
 
-# pass-rate rating, 8 samples per problem (used for the sampled regime and the attribution)
-VLLM_USE_FLASHINFER_SAMPLER=0 /root/venv-vllm/bin/python src/filter_by_difficulty.py \
-    --model /root/autodl-tmp/merged1500 --data data/gsm8k_test.jsonl \
+# pass-rate rating, 8 samples per problem, ~20 minutes per model
+python3 src/filter_by_difficulty.py --model $MERGED --data data/gsm8k_test.jsonl \
     --out data/test_rated_rl.jsonl --out-filtered /tmp/filtered.jsonl
 
-# attribution analysis (CPU only)
-python3 tools/analyze_results.py
+# ---- CPU only ----
+python3 src/compare_results.py results/base_vllm.json results/rl_greedy.json   # McNemar + fingerprint
+python3 tools/analyze_results.py                                              # six attribution analyses
 ```
 
+If flashinfer fails to JIT-compile against the system CUDA toolkit, prefix the vLLM commands
+with `VLLM_USE_FLASHINFER_SAMPLER=0` (see [docs/PITFALLS.md](docs/PITFALLS.md)).
+
 For multiple seeds, `bash scripts/run_seeds.sh` trains and `bash scripts/eval_seeds.sh`
-merges, evaluates and compares. All scripts resolve `data/`, `results/` and `outputs/`
-relative to the repository root, so they can be invoked from any directory.
+merges, evaluates and compares. Both take the interpreter paths and the scratch directory
+from environment variables (`TRAIN_PY`, `EVAL_PY`, `WORK`). All scripts resolve `data/`,
+`results/` and `outputs/` relative to the repository root, so they can be invoked from any
+directory.
 
 ## Project structure
 

@@ -24,10 +24,10 @@
 
 用法:
     # 先小样本验证（200 题，约 3 分钟）
-    /root/venv-vllm/bin/python filter_by_difficulty.py --limit 200
+    python3 filter_by_difficulty.py --limit 200
 
     # 全量（7473 题 × G=8）
-    /root/venv-vllm/bin/python filter_by_difficulty.py
+    python3 filter_by_difficulty.py
 """
 import argparse
 import json
