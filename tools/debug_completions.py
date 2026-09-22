@@ -1,28 +1,20 @@
-# -*- coding: utf-8 -*-
-"""诊断：为什么 rollout 全长 512 token、不吐 EOS、reward 恒 0。
+"""Print raw rollouts for a few prompts to inspect decoding."""
 
-只跑 2 道题 × 2 组采样参数，约 2 分钟，直接把模型输出打出来看。
-不做任何训练。
-
-用法:
-    python debug_completions.py
-"""
 import argparse
 import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))   # tools/ 下的脚本要能 import src/ 里的 reward
-from reward import compute_gsm8k_reward, extract_gsm8k_answer  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from reward import compute_gsm8k_reward, extract_gsm8k_answer
 
 
 def local_checks():
-    """不需要 GPU：直接判定 TRL 传给 HF 的 top_k=-1 是什么效果。"""
     import torch
 
     print("=" * 72)
-    print("[0] 本地判定：top_k=-1 在 HF 采样里保留几个 token？")
+    print("[0] local check: how many tokens does top_k=-1 keep in HF sampling?")
     try:
         from transformers.generation.logits_process import TopKLogitsWarper
         for tk in (-1, 0, 50):
@@ -31,22 +23,22 @@ def local_checks():
                 scores = torch.randn(1, 8)
                 out = w(torch.zeros((1, 2), dtype=torch.long), scores.clone())
                 kept = int((out[0] > -1e30).sum().item())
-                print(f"      top_k={tk:>3} → 保留 {kept}/8 个 token "
-                      f"{'★★★ 只留 1 个 = 贪心解码！' if kept == 1 else ''}")
+                print(f"      top_k={tk:>3} → keeps {kept}/8 tokens "
+                      f"{'★★★ only 1 kept = greedy decoding' if kept == 1 else ''}")
             except Exception as e:
-                print(f"      top_k={tk:>3} → 异常 {type(e).__name__}: {e}")
+                print(f"      top_k={tk:>3} → error {type(e).__name__}: {e}")
     except Exception as e:
-        print(f"      (无法测试 TopKLogitsWarper: {e})")
+        print(f"      (cannot test TopKLogitsWarper: {e})")
 
     try:
         import inspect
         from transformers.generation.utils import GenerationMixin
-        print("      HF _get_logits_warper 里跟 top_k 有关的行：")
+        print("      lines in HF _get_logits_warper related to top_k:")
         for line in inspect.getsource(GenerationMixin._get_logits_warper).splitlines():
             if "top_k" in line:
                 print(f"        {line.strip()}")
     except Exception as e:
-        print(f"      (无法读取 _get_logits_warper: {e})")
+        print(f"      (cannot read _get_logits_warper: {e})")
     print("=" * 72)
 
 
@@ -77,28 +69,26 @@ def main():
     with open(args.data, encoding="utf-8") as f:
         rows = [json.loads(line) for line in f][:args.num_problems]
 
-    # ---- 1) TRL 实际喂进去的 prompt 长什么样 ----
     try:
         from trl.data_utils import maybe_apply_chat_template
         trl_prompt = maybe_apply_chat_template(rows[0], tok)["prompt"]
-        print("\n[TRL maybe_apply_chat_template 的输出结尾]")
+        print("\n[TRL maybe_apply_chat_template output tail]")
         print(repr(trl_prompt[-120:]))
     except Exception as e:
-        print(f"\n(TRL maybe_apply_chat_template 不可用: {type(e).__name__}: {e})")
+        print(f"\n(TRL maybe_apply_chat_template unavailable: {type(e).__name__}: {e})")
 
-    # ---- 2) 逐题 × 逐采样参数，把生成文本打出来 ----
     for pi, row in enumerate(rows):
         text = tok.apply_chat_template(row["prompt"], tokenize=False,
                                        add_generation_prompt=True)
         n = len(tok(text)["input_ids"])
         print(f"\n{'=' * 72}")
-        print(f"题目 {pi+1} | prompt {n} token | gold={row['answer']}")
-        print(f"prompt 结尾: {text[-90:]!r}")
+        print(f"problem {pi+1} | prompt {n} token | gold={row['answer']}")
+        print(f"prompt tail: {text[-90:]!r}")
 
         configs = [
-            ("A. 裸测 T=1.0 top_p=1.0（前一次测试）",
+            ("A. raw test T=1.0 top_p=1.0 (previous run)",
              dict(temperature=1.0, top_p=1.0)),
-            ("B. TRL 实际参数（多传了 top_k=-1）",
+            ("B. actual TRL params (top_k=-1 also passed)",
              dict(temperature=1.0, top_p=1.0, top_k=-1,
                   repetition_penalty=1.0, min_p=None)),
             ("C. baseline T=0.8 top_p=0.95",
@@ -115,8 +105,8 @@ def main():
             plen = inputs["input_ids"].shape[1]
             news = [seq[plen:] for seq in gen]
             distinct = len({tuple(s.tolist()) for s in news})
-            flag = "  ★★★ 组内全同 = 贪心解码！" if distinct == 1 and len(news) > 1 else ""
-            print(f"\n  --- {tag} ---  组内不同样本 {distinct}/{len(news)}{flag}")
+            flag = "  ★★★ all samples identical = greedy decoding" if distinct == 1 and len(news) > 1 else ""
+            print(f"\n  --- {tag} ---  distinct samples {distinct}/{len(news)}{flag}")
             for j, new in enumerate(news):
                 raw = tok.decode(new, skip_special_tokens=False)
                 clean = tok.decode(new, skip_special_tokens=True)
@@ -124,15 +114,15 @@ def main():
                 r = compute_gsm8k_reward(clean, row["answer"])
                 print(f"   [{j}] len={len(new):>3}  eos={has_eos}  reward={r:.0f}  "
                       f"pred={extract_gsm8k_answer(clean)!r}")
-                print(f"       结尾: {raw[-200:]!r}")
+                print(f"       tail: {raw[-200:]!r}")
 
     print(f"\n{'=' * 72}")
-    print("怎么读：")
-    print("  · 若 B 组『组内全同 + 长度=512 + 不收尾』而 A/C 正常 → "
-          "元凶就是 TRL 传的 top_k=-1（等价贪心），必须在 cfg 里显式覆盖 top_k")
-    print("  · 若 B 组也正常 → TRL 的参数不是原因，改看 log_completions 打出的真实样本")
-    print("  · 若 A/B/C 都不吐 EOS → prompt 格式问题")
-    print("  · 若都正常收尾但长度接近 512 → 单纯是 CoT 太长，加大 "
+    print("how to read:")
+    print("  · if B is all-identical + length=512 + no stop while A/C are fine → "
+          "TRL's top_k=-1 (greedy equivalent) is the culprit; override top_k in cfg")
+    print("  · if B is also fine → TRL params are not the cause; check real samples from log_completions")
+    print("  · if A/B/C all lack EOS → prompt format issue")
+    print("  · if all stop normally but length nears 512 → the CoT is just long; raise "
           "--max-completion-length")
 
 
